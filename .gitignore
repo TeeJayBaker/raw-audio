@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Project data (large / regenerable)
+data/*
+!data/.gitkeep
+runs/*
+!runs/.gitkeep
+wiki/
+
+# Experiment outputs
+outputs/
+experiments/**/checkpoints/
+experiments/**/samples/
+experiments/**/logs/
+experiments/**/wandb/
+**/checkpoints/
+**/samples/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local env / secrets
+.env
+.env.*
+
+# Local assistant tooling
+.claude/
+CLAUDE.md

@@ -1,0 +1,42 @@
+# Cumulative upsample is intentionally 256 at 48 kHz, giving a 187.5 Hz
+# control/noise rate instead of preserving the original ~94 Hz mel-frame rate.
+# This is not framewise mel-conditioned, but quality may differ from vocoder originals.
+_target_: backbone.unets.UNet
+name: wavefm
+sample_rate: 48000
+io:
+  type: waveform
+  channels: 1
+  out_channels: 1
+encoder:
+  channels: [32, 64, 128, 256, 512]
+  down_factors: [2, 2, 8, 8]
+decoder:
+  up_factors: [8, 8, 2, 2]
+  skip: add
+  upsample: transpose
+  tanh_output: true
+block:
+  type: dilated_residual
+  decoder_type: mrf
+  weight_norm: true
+  encoder_depth: 1
+  decoder_depth: 1
+  boundary_kernel_size: 7
+  kernel_size: 3
+  encoder_dilations: [1]
+  decoder_kernel_sizes: [3, 7, 11]
+  decoder_dilations:
+    - [1, 3, 5]
+    - [1, 3, 5]
+    - [1, 3, 5]
+  decoder_sublayer_depth: 3
+  decoder_convs_per_sublayer: 2
+  activation: snake_beta
+  final_activation: snake_beta
+  conditioning_placement: encoder_only
+  mid_block: false
+conditioning:
+  mode: add
+  cond_dim: 512
+  time_scale: 100.0

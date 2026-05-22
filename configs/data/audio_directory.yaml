@@ -1,0 +1,6 @@
+root: data/fm-baseline
+sample_rate: 48000
+clip_seconds: 1.0
+channels: 1
+random_crop: true
+normalize: peak

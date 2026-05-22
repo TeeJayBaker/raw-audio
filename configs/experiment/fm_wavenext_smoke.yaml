@@ -1,0 +1,58 @@
+# @package _global_
+
+defaults:
+  - fm_baseline
+  - _self_
+
+conditioner:
+  type: null
+  embedding_dim: 16
+
+backbone:
+  stft:
+    n_fft: 64
+    hop_length: 16
+    win_length: 64
+  block:
+    channels: 16
+    depth: 1
+    kernel_size: 3
+    expansion: 2
+    layer_scale: "1/depth"
+  conditioning:
+    mode: adaln_zero
+    cond_dim: 16
+    # time_scale inherits from ${flow.t_encoding.scale} via fm_baseline.yaml.
+
+loss:
+  # Smoke clips are 256 samples — shorter than the default 1024-bin STFT.
+  spectral_energy_inverse_weighting: false
+
+data:
+  root: data/fm-smoke
+  sample_rate: 8000
+  clip_seconds: 0.032
+  channels: 1
+  random_crop: false
+  normalize: peak
+
+train:
+  run_dir: runs/fm-wavenext-smoke
+  device: cpu
+  max_steps: 2
+  amp: false
+  ema_decay: 0.9
+  val_fraction: 0.5
+  log_every: 1
+  val_every: 1
+  sample_every: 1
+  ckpt_every: 1
+  dataloader:
+    batch_size: 1
+    num_workers: 0
+    pin_memory: false
+    drop_last: false
+
+sampling:
+  batch_size: 1
+  steps: 2

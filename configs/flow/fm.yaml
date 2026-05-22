@@ -1,0 +1,6 @@
+t_encoding:
+  # TimeEmbedding hardcodes sinusoidal expansion; `scale` is the only live field.
+  # The experiment wires backbone.conditioning.time_scale to ${flow.t_encoding.scale}.
+  type: sinusoidal
+  scale: 100.0
+eps: 1e-5

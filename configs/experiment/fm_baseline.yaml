@@ -1,0 +1,60 @@
+# @package _global_
+
+defaults:
+  - /data/audio_directory@data
+  - /flow/fm@flow
+  - /backbone/wavenext@backbone
+  - /eval/preliminary@eval
+  - _self_
+
+trainer:
+  _target_: fm_trainer.train_fm
+
+backbone:
+  conditioning:
+    time_scale: ${flow.t_encoding.scale}
+
+conditioner:
+  type: matpac
+  checkpoint_path: ???
+  device: ${train.device}
+  use_teacher: false
+  encode_batch_size: 0
+  compile_encoder: false
+  project_to_dim: ${backbone.conditioning.cond_dim}
+
+loss:
+  loss_space: x  # 'x' = MSE on x_θ (upweights low-t); 'v' = MSE on (x_θ - x_t)/(1-t) per JiT Eq. 6
+  primary: mse
+  mr_stft_weight: 0.0
+  mr_stft_log_weight: 0.0
+  spectral_energy_inverse_weighting: true
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 2e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+
+train:
+  run_dir: runs/fm-baseline
+  device: cuda
+  max_steps: 1000
+  amp: true
+  ema_decay: 0.999
+  grad_clip: 1.0
+  val_fraction: 0.02
+  log_every: 10
+  val_every: 250
+  sample_every: 250
+  ckpt_every: 500
+  dataloader:
+    batch_size: 4
+    num_workers: 2
+    pin_memory: true
+    drop_last: true
+
+sampling:
+  batch_size: 1
+  steps: 1
+  method: euler  # 'heun' adds a corrector step (2× NFE) for noticeably smoother trajectories

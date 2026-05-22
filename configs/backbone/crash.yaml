@@ -1,0 +1,25 @@
+_target_: backbone.unets.UNet
+name: crash
+sample_rate: 48000
+io:
+  type: waveform
+  channels: 1
+  out_channels: 1
+encoder:
+  channels: [128, 128, 256, 512, 512]
+  down_factors: [2, 2, 3, 5, 5]
+  downsample_after_last: true
+  down_kernel_size: 5
+  post_downsample_1x1: true
+decoder:
+  up_factors: [5, 5, 3, 2, 2]
+  skip: concat
+block:
+  type: crash_dblock
+  depth: 1
+  kernel_size: 3
+  dilations: [1, 2, 4, 8]
+  mid_block: false
+conditioning:
+  mode: film
+  cond_dim: 512

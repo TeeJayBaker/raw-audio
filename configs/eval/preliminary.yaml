@@ -1,0 +1,28 @@
+enabled: true
+losses:
+  x_mse: true
+  v_mse: true
+metrics:
+  embedding_validation:
+    enabled: false
+    backend: clap  # clap | vggish
+    backend_cfg: {}
+    distance: none  # none | fad | mind | both
+    sample_steps: 1
+    mind_projections: 256
+    cosine: false
+    cache_real: true
+  fad:
+    enabled: false
+    status: available_via_embedding_validation
+  mind:
+    enabled: false
+    status: available_via_embedding_validation
+  embedding_cosine:
+    enabled: false
+  vendi:
+    enabled: false
+    status: placeholder
+  density_coverage:
+    enabled: false
+    status: placeholder

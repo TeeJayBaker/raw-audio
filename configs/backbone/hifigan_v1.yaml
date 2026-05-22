@@ -1,0 +1,38 @@
+# Cumulative upsample is intentionally 256 at 48 kHz, giving a 187.5 Hz
+# control/noise rate instead of preserving the original ~94 Hz mel-frame rate.
+# This is not framewise mel-conditioned, but quality may differ from vocoder originals.
+_target_: backbone.unets.Upsampler
+name: hifigan_v1
+sample_rate: 48000
+io:
+  type: waveform
+  input_channels: 1
+  input_projection: stft
+  channels: 80
+  out_channels: 1
+  length: 16384
+  stft:
+    n_fft: 2048
+    hop_length: 512
+    win_length: 2048
+decoder:
+  channels: [512, 256, 128, 64, 32]
+  up_factors: [8, 8, 2, 2]
+  upsample: transpose
+  tanh_output: true
+block:
+  type: mrf
+  depth: 1
+  boundary_kernel_size: 7
+  weight_norm: true
+  kernel_sizes: [3, 7, 11]
+  dilations:
+    - [1, 3, 5]
+    - [1, 3, 5]
+    - [1, 3, 5]
+  sublayer_depth: 3
+  convs_per_sublayer: 2
+  activation: leaky_relu
+conditioning:
+  mode: film
+  cond_dim: 512
