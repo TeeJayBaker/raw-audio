@@ -10,24 +10,24 @@ from emb.matpac import MATPACEmbedding
 from emb.null import NullEmbedding
 from emb.vggish import VGGishEmbedding
 
+_EMBEDDINGS: dict[str, type[nn.Module]] = {
+    "clap": CLAPEmbedding,
+    "matpac": MATPACEmbedding,
+    "null": NullEmbedding,
+    "vggish": VGGishEmbedding,
+}
+
 
 def build_embedding(cfg: dict[str, Any] | None, device: str | torch.device = "cpu") -> nn.Module | None:
     cfg = dict(cfg or {})
     kind = str(cfg.pop("type", cfg.pop("backend", "none"))).lower()
-    if kind in {"none", "null"} and not cfg:
-        return None
-    cfg.setdefault("device", str(device))
     if kind == "none":
         return None
     if kind == "null":
-        cfg.pop("device", None)
         return NullEmbedding(**cfg)
-    if kind == "matpac":
-        return MATPACEmbedding(**cfg)
-    if kind == "clap":
-        return CLAPEmbedding(**cfg)
-    if kind == "vggish":
-        return VGGishEmbedding(**cfg)
+    if kind in _EMBEDDINGS:
+        cfg.setdefault("device", str(device))
+        return _EMBEDDINGS[kind](**cfg)
     raise ValueError(f"Unknown embedding type/backend: {kind}")
 
 

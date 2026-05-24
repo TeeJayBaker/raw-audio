@@ -24,5 +24,5 @@ block:
   layer_scale: "1/depth"
 conditioning:
   mode: adaln_zero
-  cond_dim: 512
+  cond_dim: 384  # matches MATPAC's native embedding dim — no projector adapter needed
   time_scale: 100.0

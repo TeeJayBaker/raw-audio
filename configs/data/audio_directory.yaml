@@ -1,6 +1,18 @@
 root: data/fm-baseline
 sample_rate: 48000
-clip_seconds: 1.0
+min_seconds: 0.1
+max_seconds: 4.0
 channels: 1
-random_crop: true
-normalize: peak
+rms_lift: false
+bucket_pool_multiplier: 100
+augmentations:
+  enabled: true
+  pitch_shift:
+    prob: 0.5
+    semitones: [-2, 2]
+  start_pad:
+    prob: 0.3
+    max_ms: 8.0
+  gain:
+    prob: 0.8
+    db: [-3.0, 3.0]

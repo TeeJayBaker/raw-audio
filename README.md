@@ -95,6 +95,7 @@ PYTHONPATH=src uv run python scripts/benchmark_backbone.py
 Experiments are composed from `configs/`:
 
 - `configs/experiment/` selects complete runnable experiments.
+- `configs/train/` defines shared training and logging defaults.
 - `configs/backbone/` defines backbone families and sizes.
 - `configs/data/` defines audio dataset loading.
 - `configs/flow/` defines the flow-matching objective.
@@ -111,6 +112,31 @@ Hydra overrides can be appended as usual, for example:
 ```bash
 PYTHONPATH=src uv run python train.py --config-name experiment/fm_wavenext_smoke train.max_steps=10 sampling.steps=1
 ```
+
+## Weights & Biases
+
+Training initializes wandb by default using shared defaults from `configs/train/default.yaml`. Configure the run with Hydra overrides:
+
+```bash
+PYTHONPATH=src uv run python train.py \
+  --config-name experiment/fm_baseline \
+  train.wandb.entity=my-team \
+  train.wandb.name=fm-baseline-001
+```
+
+Disable wandb for a local run:
+
+```bash
+PYTHONPATH=src uv run python train.py --config-name experiment/fm_wavenext_smoke train.wandb.enabled=false
+```
+
+Use offline wandb logging:
+
+```bash
+PYTHONPATH=src uv run python train.py --config-name experiment/fm_baseline train.wandb.mode=offline
+```
+
+Wandb receives scalar train/validation metrics plus audio monitor pairs from a fixed validation set. Reference audio is logged once; generated audio is logged on every validation run with fixed per-example initial noise for reproducible comparisons.
 
 ## Notes
 

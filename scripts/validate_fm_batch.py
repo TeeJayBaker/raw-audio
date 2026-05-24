@@ -42,10 +42,13 @@ def main() -> None:
     if not any(root.rglob("*.wav")):
         sf.write(
             root / "validation.wav",
-            torch.zeros(int(cfg.data.sample_rate * cfg.data.clip_seconds)).numpy(),
+            torch.zeros(int(cfg.data.sample_rate * cfg.data.max_seconds)).numpy(),
             int(cfg.data.sample_rate),
         )
-    dataset = AudioDirectoryDataset(**OmegaConf.to_container(cfg.data, resolve=True))
+    data_cfg = OmegaConf.to_container(cfg.data, resolve=True)
+    data_cfg.pop("bucket_pool_multiplier", None)
+    data_cfg.pop("augmentations", None)
+    dataset = AudioDirectoryDataset(**data_cfg)
     loader = DataLoader(dataset, batch_size=1, collate_fn=collate_audio_batch)
     batch = next(iter(loader))
     model = build_backbone(cfg.backbone)

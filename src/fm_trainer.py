@@ -11,12 +11,24 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 from backbone.factory import build_backbone
-from data.audio_dataset import AudioDirectoryDataset, collate_audio_batch
-from ema import EMA
+from data.audio_dataset import (
+    AudioDirectoryDataset,
+    BucketBatchSampler,
+    collate_audio_batch,
+    subset_durations,
+)
+from data.augmentations import AugmentedDataset, build_waveform_augmenter
+from ema import EMA, ema_swapped
 from emb.factory import build_embedding, build_embedding_backend
 from eval.audio_metrics import embedding_cosine_score, frechet_audio_distance, monge_audio_distance
 from flow.fm import linear_interpolant, output_to_v, sample_fm
 from losses.audio import FMLoss
+from utils.loggers import (
+    build_audio_monitor,
+    init_wandb,
+    log_audio_monitor,
+    wandb_val_metrics,
+)
 
 
 def _as_dict(cfg: DictConfig | dict[str, Any]) -> dict[str, Any]:
@@ -25,6 +37,8 @@ def _as_dict(cfg: DictConfig | dict[str, Any]) -> dict[str, Any]:
 
 def build_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader | None]:
     data_cfg = _as_dict(cfg.data)
+    pool_multiplier = int(data_cfg.pop("bucket_pool_multiplier", 100))
+    augment_cfg = data_cfg.pop("augmentations", None)
     dataset = AudioDirectoryDataset(**data_cfg)
     val_fraction = float(cfg.train.get("val_fraction", 0.0))
     if val_fraction > 0.0 and len(dataset) > 1:
@@ -34,16 +48,43 @@ def build_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader | None]:
     else:
         train_set, val_set = dataset, None
     loader_cfg = _as_dict(cfg.train.dataloader)
-    train_loader = DataLoader(train_set, shuffle=True, collate_fn=collate_audio_batch, **loader_cfg)
-    if len(train_loader) == 0:
+    batch_size = int(loader_cfg.pop("batch_size"))
+    drop_last = bool(loader_cfg.pop("drop_last", True))
+    train_sampler = BucketBatchSampler(
+        subset_durations(train_set),
+        batch_size=batch_size,
+        pool_multiplier=pool_multiplier,
+        shuffle=True,
+        drop_last=drop_last,
+    )
+    if len(train_sampler) == 0:
         raise ValueError(
             "Training dataloader is empty. Reduce train.dataloader.batch_size, "
             "disable drop_last, or provide more audio files."
         )
+    augmenter = build_waveform_augmenter(augment_cfg, dataset.sample_rate)
+    if augmenter is not None:
+        train_set = AugmentedDataset(train_set, augmenter)
+    train_loader = DataLoader(
+        train_set,
+        batch_sampler=train_sampler,
+        collate_fn=collate_audio_batch,
+        **loader_cfg,
+    )
     val_loader = None
     if val_set is not None:
+        val_sampler = BucketBatchSampler(
+            subset_durations(val_set),
+            batch_size=batch_size,
+            pool_multiplier=pool_multiplier,
+            shuffle=False,
+            drop_last=False,
+        )
         val_loader = DataLoader(
-            val_set, shuffle=False, collate_fn=collate_audio_batch, **loader_cfg
+            val_set,
+            batch_sampler=val_sampler,
+            collate_fn=collate_audio_batch,
+            **loader_cfg,
         )
     return train_loader, val_loader
 
@@ -92,7 +133,6 @@ def _conditioner_cfg(cfg: DictConfig, device: torch.device) -> dict[str, Any]:
     conditioner_cfg = _as_dict(cfg.get("conditioner", {"type": "none"}))
     if conditioner_cfg.get("type") == "matpac":
         conditioner_cfg["device"] = str(device)
-        conditioner_cfg.setdefault("project_to_dim", int(cfg.backbone.conditioning.cond_dim))
     return conditioner_cfg
 
 
@@ -125,16 +165,17 @@ def train_fm(cfg: DictConfig) -> None:
     sample_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, run_dir / "config.yaml")
+    wandb_logger = init_wandb(cfg, run_dir)
 
     train_loader, val_loader = build_dataloaders(cfg)
     model = build_backbone(cfg.backbone).to(device)
     conditioner = build_embedding(_conditioner_cfg(cfg, device), device=device)
     if conditioner is not None:
         conditioner = conditioner.to(device).eval()
+    audio_monitor = build_audio_monitor(val_loader, conditioner, cfg, device) if wandb_logger else None
+    reference_length = _reference_length(audio_monitor, val_loader, train_loader)
     optimizer = instantiate(cfg.optimizer, params=model.parameters())
-    scaler = torch.amp.GradScaler(
-        "cuda", enabled=bool(cfg.train.get("amp", True)) and device.type == "cuda"
-    )
+    amp_enabled = bool(cfg.train.get("amp", True)) and device.type == "cuda"
     ema = (
         EMA(model, decay=float(cfg.train.get("ema_decay", 0.999)))
         if cfg.train.get("ema_decay")
@@ -150,106 +191,160 @@ def train_fm(cfg: DictConfig) -> None:
     sample_every = int(cfg.train.get("sample_every", 0))
     ckpt_every = int(cfg.train.get("ckpt_every", 500))
     grad_clip = float(cfg.train.get("grad_clip", 0.0))
+    cond_dropout_prob = float(cfg.train.get("cond_dropout_prob", 0.0))
     step = 0
     model.train()
     progress = tqdm(total=max_steps, desc="fm")
-    while step < max_steps:
-        for batch in train_loader:
-            audio = batch["audio"].to(device)
-            audio_lengths = batch["audio_lengths"].to(device)
-            sample_rate = int(batch["sample_rate"])
-            with torch.no_grad():
-                cond = _condition(conditioner, audio, sample_rate, audio_lengths)
-            flow_batch = linear_interpolant(audio, eps=float(cfg.flow.get("eps", 1e-5)))
-            optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast(device_type=device.type, enabled=scaler.is_enabled()):
-                pred = model(flow_batch.x_t, t=flow_batch.t, cond=cond, length=audio.shape[-1])
-                loss_out = loss_fn(pred, flow_batch)
-            scaler.scale(loss_out.total).backward()
-            if grad_clip > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-            if ema is not None:
-                ema.update(model)
-            step += 1
-            progress.update(1)
-            if step % log_every == 0:
-                terms = {
-                    name: float(value.detach().cpu()) for name, value in loss_out.terms.items()
-                }
-                progress.set_postfix(loss=float(loss_out.total.detach().cpu()), **terms)
-            if sample_every and step % sample_every == 0:
-                _save_sample(
-                    model, conditioner, cfg, device, sample_dir / f"step_{step:08d}.wav", ema=ema
-                )
-            if step % ckpt_every == 0 or step == max_steps:
-                _save_checkpoint(
-                    model, optimizer, scaler, ema, cfg, ckpt_dir / f"step_{step:08d}.pt", step
-                )
-            if val_loader is not None and step % int(cfg.train.get("val_every", 500)) == 0:
-                metrics = _validate(
-                    model,
-                    conditioner,
-                    val_loader,
-                    loss_fn,
-                    cfg,
-                    device,
-                    ema=ema,
-                    metric_embedding_backend=metric_embedding_backend,
-                    real_embedding_cache=real_metric_embedding_cache,
-                )
-                progress.set_postfix(**metrics)
-            if step >= max_steps:
-                break
-    progress.close()
+    try:
+        while step < max_steps:
+            for batch in train_loader:
+                audio = batch["audio"].to(device)
+                audio_lengths = batch["audio_lengths"].to(device)
+                sample_rate = int(batch["sample_rate"])
+                with torch.no_grad():
+                    cond = _condition(conditioner, audio, sample_rate, audio_lengths)
+                if cond is not None and cond_dropout_prob > 0.0:
+                    keep = (
+                        torch.rand(cond.shape[0], device=cond.device) >= cond_dropout_prob
+                    ).view(-1, *([1] * (cond.ndim - 1)))
+                    cond = cond * keep
+                flow_batch = linear_interpolant(audio, eps=float(cfg.flow.get("eps", 1e-5)))
+                optimizer.zero_grad(set_to_none=True)
+                with torch.amp.autocast(
+                    device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled
+                ):
+                    pred = model(flow_batch.x_t, t=flow_batch.t, cond=cond, length=audio.shape[-1])
+                    loss_out = loss_fn(pred, flow_batch)
+                loss_out.total.backward()
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                if ema is not None:
+                    ema.update(model)
+                step += 1
+                progress.update(1)
+                if step % log_every == 0:
+                    terms = {
+                        name: float(value.detach().cpu()) for name, value in loss_out.terms.items()
+                    }
+                    loss_value = float(loss_out.total.detach().cpu())
+                    progress.set_postfix(loss=loss_value, **terms)
+                    if wandb_logger is not None:
+                        wandb_logger.log(
+                            {"train/loss_total": loss_value}
+                            | {f"train/{name}": value for name, value in terms.items()},
+                            step=step,
+                        )
+                if sample_every and step % sample_every == 0:
+                    _save_sample(
+                        model,
+                        conditioner,
+                        cfg,
+                        device,
+                        sample_dir / f"step_{step:08d}.wav",
+                        reference_length=reference_length,
+                        ema=ema,
+                    )
+                if step % ckpt_every == 0 or step == max_steps:
+                    _save_checkpoint(
+                        model, optimizer, ema, cfg,
+                        ckpt_dir / f"step_{step:08d}.pt", step,
+                    )
+                if val_loader is not None and step % int(cfg.train.get("val_every", 500)) == 0:
+                    metrics = _validate(
+                        model,
+                        conditioner,
+                        val_loader,
+                        loss_fn,
+                        cfg,
+                        device,
+                        ema=ema,
+                        metric_embedding_backend=metric_embedding_backend,
+                        real_embedding_cache=real_metric_embedding_cache,
+                    )
+                    progress.set_postfix(**metrics)
+                    if wandb_logger is not None:
+                        wandb_logger.log(wandb_val_metrics(metrics), step=step)
+                    if audio_monitor is not None:
+                        log_audio_monitor(
+                            model,
+                            cfg,
+                            device,
+                            sample_dir,
+                            step,
+                            audio_monitor,
+                            wandb_logger,
+                            ema=ema,
+                        )
+                if step >= max_steps:
+                    break
+    finally:
+        progress.close()
+        if wandb_logger is not None:
+            wandb_logger.finish()
 
 
-def _save_sample(model, conditioner, cfg, device, path: Path, ema: EMA | None = None) -> None:
+def _reference_length(audio_monitor, val_loader, train_loader) -> int:
+    """Pick a reference audio length for periodic samples (matches a real batch)."""
+    if audio_monitor is not None:
+        return int(audio_monitor.audio.shape[-1])
+    loader = val_loader if val_loader is not None else train_loader
+    sample_batch = next(iter(loader))
+    return int(sample_batch["audio"].shape[-1])
+
+
+def _save_sample(
+    model,
+    conditioner,
+    cfg,
+    device,
+    path: Path,
+    reference_length: int,
+    ema: EMA | None = None,
+) -> None:
     import soundfile as sf
 
     was_training = model.training
     model.eval()
-    if ema is not None:
-        ema.apply_to(model)
-    cond = None
     shape = (
         int(cfg.sampling.get("batch_size", 1)),
         int(cfg.data.get("channels", 1)),
-        int(round(float(cfg.data.clip_seconds) * int(cfg.data.sample_rate))),
+        int(reference_length),
     )
+    cond = None
     if conditioner is not None:
         cond = torch.zeros(shape[0], int(getattr(conditioner, "embedding_dim", 1)), device=device)
-    audio = (
-        sample_fm(
-            model,
-            shape=shape,
-            cond=cond,
-            steps=int(cfg.sampling.get("steps", 1)),
-            eps=float(cfg.flow.get("eps", 1e-5)),
-            device=device,
-            method=str(cfg.sampling.get("method", "euler")),
-        )
-        .detach()
-        .cpu()
-    )
+    try:
+        with ema_swapped(ema, model):
+            audio = (
+                sample_fm(
+                    model,
+                    shape=shape,
+                    cond=cond,
+                    steps=int(cfg.sampling.get("steps", 1)),
+                    eps=float(cfg.flow.get("eps", 1e-5)),
+                    device=device,
+                    method=str(cfg.sampling.get("method", "euler")),
+                    rms_lift=bool(cfg.data.get("rms_lift", False)),
+                    lift_scale=float(cfg.data.get("lift_scale", 3.0)),
+                )
+                .detach()
+                .cpu()
+            )
+    finally:
+        model.train(was_training)
     peak = float(audio.abs().amax())
     audio = audio.clamp(-1.0, 1.0)
     sf.write(path, audio[0].transpose(0, 1).numpy(), int(cfg.data.sample_rate))
     path.with_suffix(".peak.txt").write_text(f"{peak:.6f}\n")
-    if ema is not None:
-        ema.restore(model)
-    model.train(was_training)
 
 
-def _save_checkpoint(model, optimizer, scaler, ema, cfg, path: Path, step: int) -> None:
+def _save_checkpoint(model, optimizer, ema, cfg, path: Path, step: int) -> None:
     torch.save(
         {
             "step": step,
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
-            "scaler": scaler.state_dict(),
             "ema": ema.state_dict() if ema is not None else None,
             "cfg": OmegaConf.to_container(cfg, resolve=True),
         },
@@ -282,81 +377,78 @@ def _validate(
     max_batches = int(cfg.train.get("val_batches", 1))
     embedding_cfg = _embedding_metric_cfg(cfg)
     embedding_enabled = bool(embedding_cfg.get("enabled", False))
-    data_cfg = cfg.get("data", {})
-    cache_real = (
-        embedding_enabled
-        and bool(embedding_cfg.get("cache_real", True))
-        and not bool(data_cfg.get("random_crop", False))
-    )
+    cache_real = embedding_enabled and bool(embedding_cfg.get("cache_real", True))
     active_cache = real_embedding_cache if cache_real else None
-    for batch in loader:
-        audio = batch["audio"].to(device)
-        audio_lengths = batch["audio_lengths"].to(device)
-        sample_rate = int(batch["sample_rate"])
-        cond = _condition(conditioner, audio, sample_rate, audio_lengths)
-        flow_batch = linear_interpolant(audio, eps=float(cfg.flow.get("eps", 1e-5)))
-        pred = model(flow_batch.x_t, t=flow_batch.t, cond=cond, length=audio.shape[-1])
-        loss_out = loss_fn(pred, flow_batch)
-        v_hat = output_to_v(pred, flow_batch.x_t, flow_batch.t, eps=float(cfg.flow.get("eps", 1e-5)))
-        batch_metrics = {
-            "val_total": float(loss_out.total.cpu()),
-            "val_x_mse": float(F.mse_loss(pred, flow_batch.x1).cpu()),
-            "val_v_mse": float(F.mse_loss(v_hat, flow_batch.v).cpu()),
-        }
-        batch_metrics.update(
-            {f"val_{k}": float(v.detach().cpu()) for k, v in loss_out.terms.items()}
-        )
-        for key, value in batch_metrics.items():
-            sums[key] = sums.get(key, 0.0) + value
-        distance = str(embedding_cfg.get("distance", "none")).lower()
-        needs_metric_backend = distance in {"fad", "mind", "both"}
-        wants_condition_cosine = bool(embedding_cfg.get("cosine", False))
-        if embedding_enabled and needs_metric_backend and metric_embedding_backend is None:
-            raise ValueError("Embedding validation requires a CLAP/VGGish metric embedding backend")
-        if embedding_enabled and (needs_metric_backend or wants_condition_cosine):
-            fake_audio = sample_fm(
-                model,
-                shape=tuple(audio.shape),
-                cond=cond,
-                steps=int(embedding_cfg.get("sample_steps", cfg.sampling.get("steps", 1))),
-                eps=float(cfg.flow.get("eps", 1e-5)),
-                device=device,
-                method=str(cfg.sampling.get("method", "euler")),
-            ).clamp(-1.0, 1.0)
-            fake_lengths = torch.full_like(audio_lengths, audio.shape[-1])
-            if needs_metric_backend:
-                real_metric = _embed_with_cache(
-                    metric_embedding_backend, batch, audio, sample_rate, audio_lengths, active_cache
-                )
-                fake_metric = metric_embedding_backend(
-                    fake_audio, sample_rate=sample_rate, audio_lengths=fake_lengths
-                )
-                if real_metric is not None and fake_metric is not None:
-                    real_metric_embeddings.append(real_metric.detach())
-                    fake_metric_embeddings.append(fake_metric.detach())
-            if wants_condition_cosine and conditioner is not None and cond is not None:
-                fake_cond = _condition(conditioner, fake_audio, sample_rate, fake_lengths)
-                if fake_cond is not None:
-                    real_condition_embeddings.append(cond.detach())
-                    fake_condition_embeddings.append(fake_cond.detach())
-        batches += 1
-        if batches >= max_batches:
-            break
-    metrics = {key: value / max(1, batches) for key, value in sums.items()}
-    if embedding_enabled:
-        metrics.update(
-            _finalize_embedding_metrics(
-                real_metric_embeddings,
-                fake_metric_embeddings,
-                real_condition_embeddings,
-                fake_condition_embeddings,
-                embedding_cfg,
+    try:
+        for batch in loader:
+            audio = batch["audio"].to(device)
+            audio_lengths = batch["audio_lengths"].to(device)
+            sample_rate = int(batch["sample_rate"])
+            cond = _condition(conditioner, audio, sample_rate, audio_lengths)
+            flow_batch = linear_interpolant(audio, eps=float(cfg.flow.get("eps", 1e-5)))
+            pred = model(flow_batch.x_t, t=flow_batch.t, cond=cond, length=audio.shape[-1])
+            loss_out = loss_fn(pred, flow_batch)
+            v_hat = output_to_v(pred, flow_batch.x_t, flow_batch.t, eps=float(cfg.flow.get("eps", 1e-5)))
+            batch_metrics = {
+                "val_total": float(loss_out.total.cpu()),
+                "val_x_mse": float(F.mse_loss(pred, flow_batch.x1).cpu()),
+                "val_v_mse": float(F.mse_loss(v_hat, flow_batch.v).cpu()),
+            }
+            batch_metrics.update(
+                {f"val_{k}": float(v.detach().cpu()) for k, v in loss_out.terms.items()}
             )
-        )
-        metrics["val_real_embedding_cache_size"] = float(len(active_cache or {}))
-    if ema is not None:
-        ema.restore(model)
-    model.train(was_training)
+            for key, value in batch_metrics.items():
+                sums[key] = sums.get(key, 0.0) + value
+            distance = str(embedding_cfg.get("distance", "none")).lower()
+            needs_metric_backend = distance in {"fad", "mind", "both"}
+            wants_condition_cosine = bool(embedding_cfg.get("cosine", False))
+            if embedding_enabled and needs_metric_backend and metric_embedding_backend is None:
+                raise ValueError("Embedding validation requires a CLAP/VGGish metric embedding backend")
+            if embedding_enabled and (needs_metric_backend or wants_condition_cosine):
+                fake_audio = sample_fm(
+                    model,
+                    shape=tuple(audio.shape),
+                    cond=cond,
+                    steps=int(embedding_cfg.get("sample_steps", cfg.sampling.get("steps", 1))),
+                    eps=float(cfg.flow.get("eps", 1e-5)),
+                    device=device,
+                    method=str(cfg.sampling.get("method", "euler")),
+                ).clamp(-1.0, 1.0)
+                fake_lengths = torch.full_like(audio_lengths, audio.shape[-1])
+                if needs_metric_backend:
+                    real_metric = _embed_with_cache(
+                        metric_embedding_backend, batch, audio, sample_rate, audio_lengths, active_cache
+                    )
+                    fake_metric = metric_embedding_backend(
+                        fake_audio, sample_rate=sample_rate, audio_lengths=fake_lengths
+                    )
+                    if real_metric is not None and fake_metric is not None:
+                        real_metric_embeddings.append(real_metric.detach())
+                        fake_metric_embeddings.append(fake_metric.detach())
+                if wants_condition_cosine and conditioner is not None and cond is not None:
+                    fake_cond = _condition(conditioner, fake_audio, sample_rate, fake_lengths)
+                    if fake_cond is not None:
+                        real_condition_embeddings.append(cond.detach())
+                        fake_condition_embeddings.append(fake_cond.detach())
+            batches += 1
+            if batches >= max_batches:
+                break
+        metrics = {key: value / max(1, batches) for key, value in sums.items()}
+        if embedding_enabled:
+            metrics.update(
+                _finalize_embedding_metrics(
+                    real_metric_embeddings,
+                    fake_metric_embeddings,
+                    real_condition_embeddings,
+                    fake_condition_embeddings,
+                    embedding_cfg,
+                )
+            )
+            metrics["val_real_embedding_cache_size"] = float(len(active_cache or {}))
+    finally:
+        if ema is not None:
+            ema.restore(model)
+        model.train(was_training)
     return metrics
 
 

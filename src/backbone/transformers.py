@@ -14,7 +14,7 @@ from backbone.audio_ops import (
     waveform_to_stft,
 )
 from backbone.blocks import center_crop_or_pad
-from backbone.conditioning import TimeEmbedding, combine_time_conditioning, make_conditioning
+from backbone.conditioning import TimeEmbedding, make_conditioning, prepare_conditioning
 from backbone.convnext_blocks import ConvNeXtBlock1d
 from backbone.transformer_blocks import TransformerBlock
 
@@ -174,7 +174,7 @@ class Transformer(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor | None = None, cond: torch.Tensor | None = None, length: int | None = None) -> torch.Tensor:
         if t is not None and self.time_embed is not None:
             t = self.time_embed(t)
-        cond = combine_time_conditioning(t, cond, self.cond_mode)
+        cond = prepare_conditioning(t, cond, self.cond_mode, self.cond_dim)
         if self.is_stft:
             if x.ndim == 4 and not torch.is_complex(x):
                 raise ValueError("Real STFT tensors [B, C, F, T] are ambiguous; pass complex STFT or channelized real/imag input")

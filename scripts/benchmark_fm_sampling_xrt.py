@@ -30,7 +30,13 @@ def _load_config(path: Path):
 
 
 def benchmark(
-    cfg, batch_size: int, steps: int, warmup: int, iters: int, threads: int | None
+    cfg,
+    batch_size: int,
+    steps: int,
+    warmup: int,
+    iters: int,
+    threads: int | None,
+    seconds: float,
 ) -> dict[str, float | int]:
     if threads is not None:
         torch.set_num_threads(threads)
@@ -38,7 +44,7 @@ def benchmark(
     shape = (
         batch_size,
         int(cfg.data.get("channels", 1)),
-        int(round(float(cfg.data.clip_seconds) * int(cfg.data.sample_rate))),
+        int(round(seconds * int(cfg.data.sample_rate))),
     )
     cond_dim = int(cfg.backbone.conditioning.cond_dim)
     cond = torch.zeros(batch_size, cond_dim)
@@ -68,7 +74,7 @@ def benchmark(
 
     mean_s = statistics.mean(timings)
     median_s = statistics.median(timings)
-    generated_s = float(cfg.data.clip_seconds) * batch_size
+    generated_s = float(seconds) * batch_size
     return {
         "batch_size": batch_size,
         "steps": steps,
@@ -88,12 +94,21 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=5)
     parser.add_argument("--threads", type=int, default=None)
+    parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="sample length in seconds (defaults to data.max_seconds)",
+    )
     args = parser.parse_args()
 
     cfg = _load_config(args.config)
     steps = int(args.steps or cfg.sampling.steps)
+    seconds = float(args.seconds if args.seconds is not None else cfg.data.max_seconds)
     for batch_size in args.batch_sizes:
-        row = benchmark(cfg, batch_size, steps, args.warmup, args.iters, args.threads)
+        row = benchmark(
+            cfg, batch_size, steps, args.warmup, args.iters, args.threads, seconds
+        )
         print(
             f"batch={row['batch_size']} steps={row['steps']} threads={row['threads']} "
             f"mean={row['mean_ms']:.3f} ms median={row['median_ms']:.3f} ms "

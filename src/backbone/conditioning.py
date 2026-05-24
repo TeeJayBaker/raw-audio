@@ -10,15 +10,26 @@ def conditioning_mode(conditioning: dict | None) -> str:
     return (conditioning or {}).get("mode", "none")
 
 
-def combine_time_conditioning(t: torch.Tensor | None, cond: torch.Tensor | None, mode: str) -> torch.Tensor | None:
+def prepare_conditioning(
+    t: torch.Tensor | None,
+    cond: torch.Tensor | None,
+    mode: str,
+    cond_dim: int,
+) -> torch.Tensor | None:
+    if mode == "none":
+        if t is not None or cond is not None:
+            raise ValueError("Received conditioning but this backbone has no configured conditioning path")
+        return None
+
+    if cond is None:
+        if t is None:
+            return None
+        cond = t.new_zeros(t.shape[0], cond_dim)
     if t is None:
         return cond
-    if mode == "none":
-        raise ValueError("Received t but this backbone has no configured conditioning path")
-    if cond is None:
-        return t
+    if cond.shape != t.shape:
+        raise ValueError(f"Expected conditioning shape {tuple(t.shape)}, got {tuple(cond.shape)}")
     return t + cond
-
 
 class TimeEmbedding(nn.Module):
     def __init__(self, dim: int, hidden_dim: int | None = None, features: int | None = None, time_scale: float = 1.0):

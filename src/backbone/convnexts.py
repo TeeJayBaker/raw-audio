@@ -13,7 +13,7 @@ from backbone.audio_ops import (
 )
 from backbone.blocks import center_crop_or_pad
 from backbone.complex_blocks import ComplexPointwiseConv1d
-from backbone.conditioning import TimeEmbedding, combine_time_conditioning, conditioning_mode
+from backbone.conditioning import TimeEmbedding, conditioning_mode, prepare_conditioning
 from backbone.convnext_blocks import ConvNeXtBlock1d
 
 
@@ -403,7 +403,7 @@ class ConvNeXt(nn.Module):
     ) -> torch.Tensor:
         if t is not None and self.time_embed is not None:
             t = self.time_embed(t)
-        cond = combine_time_conditioning(t, cond, self.cond_mode)
+        cond = prepare_conditioning(t, cond, self.cond_mode, self.cond_dim)
         if self.output_stft and not self.uses_stft:
             raise ValueError("io.type: stft requires STFT paths")
         if self.output_stft:

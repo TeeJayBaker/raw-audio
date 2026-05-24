@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 import torch.nn.functional as F
-
-from flow.fm import output_to_v
 
 DEFAULT_MR_STFT_RESOLUTIONS = [
     {"n_fft": 1024, "hop_length": 256, "win_length": 1024},
@@ -15,12 +11,6 @@ DEFAULT_MR_STFT_RESOLUTIONS = [
 
 _WINDOW_CACHE: dict[tuple[int, str, torch.dtype], torch.Tensor] = {}
 _FILTERBANK_CACHE: dict[tuple[int, int, str, torch.dtype], torch.Tensor] = {}
-
-
-@dataclass(frozen=True)
-class LossOutput:
-    total: torch.Tensor
-    terms: dict[str, torch.Tensor]
 
 
 def _cached_hann_window(win_length: int, like: torch.Tensor) -> torch.Tensor:
@@ -219,81 +209,3 @@ def mr_stft_loss(
             mag = mag + float(log_weight) * F.l1_loss(torch.log(pred_mag + eps), torch.log(tgt_mag + eps))
         losses.append(sc + mag)
     return torch.stack(losses).mean()
-
-
-class FMLoss:
-    """Loss for FM training. The network always predicts x_1; `loss_space` picks
-    whether the primary regression is in x-space (plain MSE on x_θ, upweights low-t)
-    or v-space (MSE on the velocity, JiT Eq. 6 — equivalent to 1/(1-t)² weighting)."""
-
-    def __init__(
-        self,
-        loss_space: str = "x",
-        primary: str = "mse",
-        mr_stft_weight: float = 0.0,
-        mr_stft_log_weight: float = 0.0,
-        mr_stft_resolutions: list[dict] | None = None,
-        mr_stft_stereo_policy: str = "mean",
-        spectral_energy_inverse_weighting: bool = False,
-        spectral_energy_weight: float | None = None,
-        spectral_energy_resolution: dict | None = None,
-        spectral_energy_stereo_policy: str = "mean",
-        eps: float = 1e-5,
-    ):
-        if loss_space not in {"x", "v"}:
-            raise ValueError("loss_space must be 'x' or 'v'")
-        if primary not in {"mse", "l1"}:
-            raise ValueError("primary must be 'mse' or 'l1'")
-        self.loss_space = loss_space
-        self.primary = primary
-        self.eps = float(eps)
-        self.mr_stft_weight = float(mr_stft_weight)
-        self.mr_stft_log_weight = float(mr_stft_log_weight)
-        self.mr_stft_resolutions = mr_stft_resolutions
-        self.mr_stft_stereo_policy = mr_stft_stereo_policy
-        self.spectral_energy_inverse_weighting = bool(spectral_energy_inverse_weighting)
-        self.spectral_energy_weight = (
-            float(spectral_energy_weight)
-            if spectral_energy_weight is not None
-            else float(self.spectral_energy_inverse_weighting)
-        )
-        self.spectral_energy_resolution = spectral_energy_resolution or {}
-        self.spectral_energy_stereo_policy = spectral_energy_stereo_policy
-
-    def __call__(self, x_hat: torch.Tensor, flow_batch) -> LossOutput:
-        if self.loss_space == "x":
-            pred, target = x_hat, flow_batch.x1
-        else:
-            pred = output_to_v(x_hat, flow_batch.x_t, flow_batch.t, eps=self.eps)
-            target = flow_batch.v
-        primary = F.mse_loss(pred, target) if self.primary == "mse" else F.l1_loss(pred, target)
-        terms = {f"{self.loss_space}_{self.primary}": primary}
-        total = primary
-
-        if self.mr_stft_weight:
-            stft = mr_stft_loss(
-                x_hat,
-                flow_batch.x1,
-                resolutions=self.mr_stft_resolutions,
-                log_weight=self.mr_stft_log_weight,
-                stereo_policy=self.mr_stft_stereo_policy,
-            )
-            terms["mr_stft"] = stft
-            total = total + self.mr_stft_weight * stft
-        if self.spectral_energy_weight:
-            spectral = spectral_energy_weighted_loss(
-                x_hat - flow_batch.x1,
-                flow_batch.x1,
-                stereo_policy=self.spectral_energy_stereo_policy,
-                **self.spectral_energy_resolution,
-            )
-            terms["spectral_energy_weighted"] = spectral
-            total = total + self.spectral_energy_weight * spectral
-        if self.spectral_energy_inverse_weighting or self.spectral_energy_weight:
-            weights = spectral_energy_inverse_weight(
-                flow_batch.x1,
-                stereo_policy=self.spectral_energy_stereo_policy,
-                **self.spectral_energy_resolution,
-            )
-            terms["spectral_energy_inverse_weight_mean"] = weights.mean().detach()
-        return LossOutput(total=total, terms=terms)

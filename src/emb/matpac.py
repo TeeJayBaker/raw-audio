@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+import torchaudio
 from torch import nn
 
 from matpac.wrapper import MATpacWrapper
@@ -18,7 +19,7 @@ class MATPACEmbedding(nn.Module):
         use_teacher: bool = False,
         encode_batch_size: int = 0,
         compile_encoder: bool = False,
-        project_to_dim: int | None = None,
+        input_sample_rate: int = 48000,
     ):
         super().__init__()
         checkpoint_path = Path(checkpoint_path).expanduser()
@@ -34,12 +35,16 @@ class MATPACEmbedding(nn.Module):
             encode_batch_size=encode_batch_size,
             compile_encoder=compile_encoder,
         )
+        self.device = torch.device(device)
+        self.input_sample_rate = int(input_sample_rate)
+        self.sample_rate = int(self.wrapper.SAMPLE_RATE)
+        self.resampler = (
+            None
+            if self.input_sample_rate == self.sample_rate
+            else torchaudio.transforms.Resample(self.input_sample_rate, self.sample_rate).to(self.device)
+        )
         self.embedding_dim = int(self.wrapper.embedding_dim)
-        self.projector = nn.Identity()
-        if project_to_dim is not None and int(project_to_dim) != self.embedding_dim:
-            self.projector = nn.Linear(self.embedding_dim, int(project_to_dim), bias=False)
-            self.embedding_dim = int(project_to_dim)
-        for param in self.wrapper.parameters():
+        for param in self.parameters():
             param.requires_grad = False
         self.eval()
 
@@ -50,8 +55,19 @@ class MATPACEmbedding(nn.Module):
         sample_rate: int = 48000,
         audio_lengths: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        embeddings = self.wrapper.encode_audio(audio, sample_rate=sample_rate, audio_lengths=audio_lengths)
-        return self.projector(embeddings)
+        if int(sample_rate) != self.input_sample_rate:
+            raise ValueError(
+                f"MATPACEmbedding was initialized for {self.input_sample_rate} Hz input, "
+                f"but got {sample_rate} Hz."
+            )
+        audio = audio.detach().to(self.device).float()
+        if audio_lengths is not None:
+            audio_lengths = audio_lengths.to(self.device)
+        if self.resampler is not None:
+            audio = self.resampler(audio)
+            if audio_lengths is not None:
+                audio_lengths = (audio_lengths.float() * (self.sample_rate / self.input_sample_rate)).long()
+        return self.wrapper.encode_audio(audio, sample_rate=self.sample_rate, audio_lengths=audio_lengths)
 
     @torch.no_grad()
     def encode_frames(
@@ -60,4 +76,16 @@ class MATPACEmbedding(nn.Module):
         sample_rate: int = 48000,
         audio_lengths: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        return self.wrapper.encode_audio_frames(audio, sample_rate=sample_rate, audio_lengths=audio_lengths)
+        if int(sample_rate) != self.input_sample_rate:
+            raise ValueError(
+                f"MATPACEmbedding was initialized for {self.input_sample_rate} Hz input, "
+                f"but got {sample_rate} Hz."
+            )
+        audio = audio.detach().to(self.device).float()
+        if audio_lengths is not None:
+            audio_lengths = audio_lengths.to(self.device)
+        if self.resampler is not None:
+            audio = self.resampler(audio)
+            if audio_lengths is not None:
+                audio_lengths = (audio_lengths.float() * (self.sample_rate / self.input_sample_rate)).long()
+        return self.wrapper.encode_audio_frames(audio, sample_rate=self.sample_rate, audio_lengths=audio_lengths)

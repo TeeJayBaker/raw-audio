@@ -1,0 +1,13 @@
+wandb:
+  enabled: true
+  project: raw-audio
+  entity: null
+  name: null
+  group: null
+  tags: []
+  mode: online
+  log_config: true
+  audio_examples: 4
+  audio_seed: 0
+  log_reference_once: true
+  save_reference_local: true

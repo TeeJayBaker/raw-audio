@@ -11,7 +11,7 @@ from omegaconf import OmegaConf
 from backbone.audio_ops import STFTConfig, channels_to_complex, complex_to_channels
 from backbone.blocks import CRASHDBlock1d, MRFBlock, SnakeBeta
 from backbone.complex_blocks import ComplexLayerNorm, ComplexPointwiseConv1d, SplitGELU
-from backbone.conditioning import TimeEmbedding, combine_time_conditioning
+from backbone.conditioning import TimeEmbedding, prepare_conditioning
 from backbone.convnext_blocks import BiasNorm1d
 from backbone.convnexts import ComplexIStftHead, IStftHead
 from backbone.factory import build_backbone, load_backbone_config
@@ -208,9 +208,10 @@ def test_conditioning_global_only_contract():
 def test_time_conditioning_combines_with_explicit_conditioning():
     t = torch.randn(2, 4)
     cond = torch.randn(2, 4)
-    assert torch.allclose(combine_time_conditioning(t, cond, "add"), t + cond)
+    assert torch.allclose(prepare_conditioning(t, cond, "add", 4), t + cond)
+    assert torch.allclose(prepare_conditioning(t, None, "add", 4), t)
     with pytest.raises(ValueError, match="no configured conditioning"):
-        combine_time_conditioning(t, cond, "none")
+        prepare_conditioning(t, cond, "none", 4)
 
 
 @pytest.mark.parametrize(

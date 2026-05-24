@@ -11,10 +11,12 @@ dependencies = [
     "numpy",
     "einops",
     "scipy",
+    "soxr",
     "matplotlib",
     "tqdm",
     "arxiv",
     "hydra-core",
+    "wandb",
 ]
 
 [dependency-groups]

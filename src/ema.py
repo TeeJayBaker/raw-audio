@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 import torch
 from torch import nn
@@ -47,3 +48,16 @@ class EMA:
 
     def _parameters(self, model: nn.Module) -> Iterator[tuple[str, nn.Parameter]]:
         return ((name, param) for name, param in model.named_parameters() if param.requires_grad)
+
+
+@contextmanager
+def ema_swapped(ema: EMA | None, model: nn.Module):
+    """Swap EMA weights into `model` for the duration of the block; always restore."""
+    if ema is None:
+        yield
+        return
+    ema.apply_to(model)
+    try:
+        yield
+    finally:
+        ema.restore(model)

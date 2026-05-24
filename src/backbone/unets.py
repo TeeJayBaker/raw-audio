@@ -14,7 +14,7 @@ from backbone.blocks import (
     activation,
     center_crop_or_pad,
 )
-from backbone.conditioning import TimeEmbedding, combine_time_conditioning, conditioning_mode
+from backbone.conditioning import TimeEmbedding, conditioning_mode, prepare_conditioning
 
 
 def _residual_block(channels: int, block: dict, conditioning: dict | None, index: int = 0, prefix: str = "") -> nn.Module:
@@ -178,7 +178,7 @@ class UNet(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor | None = None, cond: torch.Tensor | None = None, length: int | None = None) -> torch.Tensor:
         if t is not None and self.time_embed is not None:
             t = self.time_embed(t)
-        cond = combine_time_conditioning(t, cond, self.cond_mode)
+        cond = prepare_conditioning(t, cond, self.cond_mode, self.cond_dim)
         x = as_waveform(x)
         target_length = length or x.shape[-1]
         h = self.in_proj(x)
@@ -273,7 +273,7 @@ class Upsampler(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor | None = None, cond: torch.Tensor | None = None, length: int | None = None) -> torch.Tensor:
         if t is not None and self.time_embed is not None:
             t = self.time_embed(t)
-        cond = combine_time_conditioning(t, cond, self.cond_mode)
+        cond = prepare_conditioning(t, cond, self.cond_mode, self.cond_dim)
         x = as_waveform(x)
         if self.frame_proj is not None:
             x = self.frame_proj(complex_to_channels(waveform_to_stft(x, self.stft)))

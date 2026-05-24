@@ -5,7 +5,7 @@ defaults:
   - _self_
 
 conditioner:
-  type: null
+  type: "null"  # quoted: selects NullEmbedding (zero vector). Bare YAML `null` parses to Python None and disables the conditioner entirely.
   embedding_dim: 16
 
 backbone:
@@ -31,10 +31,12 @@ loss:
 data:
   root: data/fm-smoke
   sample_rate: 8000
-  clip_seconds: 0.032
+  min_seconds: 0.032
+  max_seconds: 0.032
   channels: 1
-  random_crop: false
-  normalize: peak
+  rms_lift: false
+  augmentations:
+    enabled: false
 
 train:
   run_dir: runs/fm-wavenext-smoke

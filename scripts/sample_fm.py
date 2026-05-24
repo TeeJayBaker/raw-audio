@@ -17,6 +17,12 @@ def main() -> None:
     parser.add_argument("--out", default="sample.wav")
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="sample length in seconds (defaults to data.max_seconds)",
+    )
+    parser.add_argument(
         "--no-ema", action="store_true", help="sample raw model weights even when EMA is saved"
     )
     args = parser.parse_args()
@@ -33,10 +39,11 @@ def main() -> None:
     conditioner = build_embedding(
         {"type": "null", "embedding_dim": cfg.backbone.conditioning.cond_dim}
     )
+    seconds = float(args.seconds if args.seconds is not None else cfg.data.max_seconds)
     shape = (
         1,
         int(cfg.data.channels),
-        int(round(float(cfg.data.clip_seconds) * int(cfg.data.sample_rate))),
+        int(round(seconds * int(cfg.data.sample_rate))),
     )
     cond = conditioner(
         torch.zeros(shape),
@@ -50,6 +57,8 @@ def main() -> None:
         steps=args.steps or int(cfg.sampling.steps),
         prediction_target=str(cfg.flow.prediction_target),
         eps=float(cfg.flow.get("eps", 1e-5)),
+        rms_lift=bool(cfg.data.get("rms_lift", False)),
+        lift_scale=float(cfg.data.get("lift_scale", 3.0)),
     )
     audio = audio.clamp(-1.0, 1.0)
     sf.write(args.out, audio[0].cpu().transpose(0, 1).numpy(), int(cfg.data.sample_rate))
