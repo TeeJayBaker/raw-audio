@@ -5,9 +5,12 @@ max_seconds: 4.0
 channels: 1
 # WavFlow amplitude lift — a dataset property (crest-factor dependent). Applied to the target by the
 # trainer (after the conditioner sees natural audio), undone by RectifiedFlow.sample.
+# tanh soft-knee at ≈ 1/rms_target (= 20 dB here); lifted RMS = rms_target * lift_scale (= 1.0).
+# 0.1/10 chosen from the measured one-shot crest distribution (median 13.6 dB); WavFlow's 0.33/3
+# (9.6 dB ceiling) clipped transients on 80% of files. See wiki/reports/2026-05-26-rms-lift-crest-factor.html
 rms_lift: false
-rms_target: 0.33
-lift_scale: 3.0
+rms_target: 0.1
+lift_scale: 10.0
 bucket_pool_multiplier: 100
 augmentations:
   enabled: true

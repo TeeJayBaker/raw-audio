@@ -332,8 +332,10 @@ class RFTrainer(BaseTrainer):
         loss_cfg = self.cfg.loss
         if self.rms_lift:
             # WavFlow (§3.2) amplitude lift of the target; inverse ÷lift_scale in RectifiedFlow.sample.
+            # tanh (not WavFlow's hard clamp) soft-saturates rare high-crest peaks instead of flat-topping;
+            # near-linear at r_*=0.1 so the body is just unit-RMS-normalised (lifted RMS ≈ rms_target*lift_scale).
             rms = audio.pow(2).mean(dim=(-2, -1), keepdim=True).sqrt().clamp_min(1e-8)
-            audio = self.lift_scale * ((self.rms_target / rms) * audio).clamp(-1.0, 1.0)
+            audio = self.lift_scale * torch.tanh((self.rms_target / rms) * audio)
         x_t, t, x1 = self.method.train_tuple(audio, t=self._sample_t(audio))
         with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.amp_enabled):
             pred = self.model(x_t, t=t, cond=cond, length=audio.shape[-1])
