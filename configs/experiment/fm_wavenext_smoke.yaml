@@ -20,13 +20,8 @@ backbone:
     expansion: 2
     layer_scale: "1/depth"
   conditioning:
-    mode: adaln_zero
     cond_dim: 16
     # time_scale inherits from ${flow.t_encoding.scale} via fm_baseline.yaml.
-
-loss:
-  # Smoke clips are 256 samples — shorter than the default 1024-bin STFT.
-  spectral_energy_inverse_weighting: false
 
 data:
   root: data/fm-smoke
@@ -44,6 +39,7 @@ train:
   max_steps: 2
   amp: false
   ema_decay: 0.9
+  warmup_steps: 0
   val_fraction: 0.5
   log_every: 1
   val_every: 1

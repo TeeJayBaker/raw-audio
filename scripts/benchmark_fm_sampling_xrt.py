@@ -16,7 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from backbone.factory import build_backbone  # noqa: E402
-from flow.fm import sample_fm  # noqa: E402
+from flow.fm import RectifiedFlow  # noqa: E402
 
 
 def _load_config(path: Path):
@@ -48,28 +48,16 @@ def benchmark(
     )
     cond_dim = int(cfg.backbone.conditioning.cond_dim)
     cond = torch.zeros(batch_size, cond_dim)
+    flow = RectifiedFlow()
+    method = str(cfg.sampling.get("method", "euler"))
 
     with torch.inference_mode():
         for _ in range(warmup):
-            sample_fm(
-                model,
-                shape=shape,
-                cond=cond,
-                steps=steps,
-                prediction_target=str(cfg.flow.prediction_target),
-                eps=float(cfg.flow.get("eps", 1e-5)),
-            )
+            flow.sample(model, shape=shape, cond=cond, steps=steps, method=method)
         timings = []
         for _ in range(iters):
             start = time.perf_counter()
-            sample_fm(
-                model,
-                shape=shape,
-                cond=cond,
-                steps=steps,
-                prediction_target=str(cfg.flow.prediction_target),
-                eps=float(cfg.flow.get("eps", 1e-5)),
-            )
+            flow.sample(model, shape=shape, cond=cond, steps=steps, method=method)
             timings.append(time.perf_counter() - start)
 
     mean_s = statistics.mean(timings)

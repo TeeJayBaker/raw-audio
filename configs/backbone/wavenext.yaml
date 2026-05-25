@@ -1,10 +1,8 @@
-_target_: backbone.convnexts.ConvNeXt
+_target_: backbone.convnext.ConvNeXt
 name: wavenext
 sample_rate: 48000
-io:
-  type: waveform
-  channels: 1
-  out_channels: 1
+channels: 1
+out_channels: 1
 branches:
   mode: single
 stft:
@@ -13,16 +11,12 @@ stft:
   win_length: 2048
 head:
   type: wavenext
-backend:
-  type: real
 block:
-  type: convnext
   channels: 512
   depth: 8
   kernel_size: 7
   expansion: 3
   layer_scale: "1/depth"
 conditioning:
-  mode: adaln_zero
   cond_dim: 384  # matches MATPAC's native embedding dim — no projector adapter needed
   time_scale: 100.0

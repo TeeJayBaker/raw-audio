@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 import soundfile as sf
 import torch
 from omegaconf import OmegaConf
 
-from backbone.factory import build_backbone
-from emb.factory import build_embedding
-from flow.fm import sample_fm
+ROOT = Path(__file__).resolve().parents[1]
+for _path in (ROOT / "src", ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from backbone.factory import build_backbone  # noqa: E402
+from emb.factory import build_embedding  # noqa: E402
+from flow.fm import RectifiedFlow  # noqa: E402
 
 
 def main() -> None:
@@ -50,16 +57,17 @@ def main() -> None:
         sample_rate=int(cfg.data.sample_rate),
         audio_lengths=torch.tensor([shape[-1]]),
     )
-    audio = sample_fm(
+    flow = RectifiedFlow()
+    audio = flow.sample(
         model,
         shape=shape,
         cond=cond,
         steps=args.steps or int(cfg.sampling.steps),
-        prediction_target=str(cfg.flow.prediction_target),
-        eps=float(cfg.flow.get("eps", 1e-5)),
-        rms_lift=bool(cfg.data.get("rms_lift", False)),
-        lift_scale=float(cfg.data.get("lift_scale", 3.0)),
+        method=str(cfg.sampling.get("method", "euler")),
+        guidance_scale=float(cfg.sampling.get("guidance_scale", 1.0)),
     )
+    if bool(cfg.data.get("rms_lift", False)):
+        audio = audio / float(cfg.data.get("lift_scale", 3.0))
     audio = audio.clamp(-1.0, 1.0)
     sf.write(args.out, audio[0].cpu().transpose(0, 1).numpy(), int(cfg.data.sample_rate))
 

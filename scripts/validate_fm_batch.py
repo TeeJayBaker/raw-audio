@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import hydra
@@ -9,11 +10,16 @@ import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-from backbone.factory import build_backbone
-from data.audio_dataset import AudioDirectoryDataset, collate_audio_batch
-from emb.factory import build_embedding
-from flow.fm import linear_interpolant
-from losses.audio import FMLoss
+ROOT = Path(__file__).resolve().parents[1]
+for _path in (ROOT / "src", ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from backbone.factory import build_backbone  # noqa: E402
+from data.audio_dataset import AudioDirectoryDataset, collate_audio_batch  # noqa: E402
+from emb.factory import build_embedding  # noqa: E402
+from flow.fm import RectifiedFlow  # noqa: E402
+from losses.audio import mr_stft_loss  # noqa: E402
 
 
 def main() -> None:
@@ -56,15 +62,25 @@ def main() -> None:
     cond = None
     if conditioner is not None:
         cond = conditioner(batch["audio"], sample_rate=int(batch["sample_rate"]), audio_lengths=batch["audio_lengths"])
-    flow_batch = linear_interpolant(
-        batch["audio"],
-        prediction_target=str(cfg.flow.prediction_target),
-        eps=float(cfg.flow.get("eps", 1e-5)),
+    flow = RectifiedFlow()
+    x_t, t, x1 = flow.train_tuple(batch["audio"], t=torch.rand(batch["audio"].shape[0]))
+    pred = model(x_t, t=t, cond=cond, length=batch["audio"].shape[-1])
+    loss_cfg = OmegaConf.to_container(cfg.loss, resolve=True)
+    total, _ = flow.loss(
+        pred,
+        x1,
+        x_t,
+        t,
+        space=str(loss_cfg.get("loss_space", "v")),
+        loss_type=str(loss_cfg.get("primary", "mse")),
     )
-    pred = model(flow_batch.x_t, t=flow_batch.t, cond=cond, length=batch["audio"].shape[-1])
-    loss = FMLoss(**OmegaConf.to_container(cfg.loss, resolve=True), prediction_target=str(cfg.flow.prediction_target))(pred, flow_batch)
-    loss.total.backward()
-    print(f"ok batch={tuple(batch['audio'].shape)} pred={tuple(pred.shape)} loss={float(loss.total.detach()):.6f}")
+    mr_stft_weight = float(loss_cfg.get("mr_stft_weight", 0.0))
+    if mr_stft_weight > 0.0:
+        total = total + mr_stft_weight * mr_stft_loss(
+            pred, x1, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0))
+        )
+    total.backward()
+    print(f"ok batch={tuple(batch['audio'].shape)} pred={tuple(pred.shape)} loss={float(total.detach()):.6f}")
 
 
 if __name__ == "__main__":

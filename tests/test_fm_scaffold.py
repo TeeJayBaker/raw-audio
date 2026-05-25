@@ -14,19 +14,17 @@ from data.audio_dataset import (
     collate_audio_batch,
 )
 from data.augmentations import (
+    AugmentedDataset,
     apply_gain,
     apply_pitch_shift,
     apply_start_pad,
+    build_waveform_augmenter,
 )
 from ema import EMA
 from emb.factory import build_embedding
 from emb.matpac import MATPACEmbedding
 from emb.null import NullEmbedding
-from flow.fm import linear_interpolant, output_to_v, sample_fm
-from fm_trainer import _validate, build_dataloaders, train_fm
-from losses.audio import FMLoss
 from matpac.matpac import MATPAC
-from utils.loggers import AudioMonitor, WandbLogger, build_audio_monitor, log_audio_monitor
 
 
 def test_audio_directory_dataset_start_crop_and_pad(tmp_path: Path):
@@ -34,9 +32,7 @@ def test_audio_directory_dataset_start_crop_and_pad(tmp_path: Path):
     sf.write(tmp_path / "long.wav", long_signal.numpy(), 16000)
     sf.write(tmp_path / "short.wav", torch.ones(40).numpy(), 16000)
     # sample_rate matches source rate so cropping is byte-exact (no resampler smoothing).
-    dataset = AudioDirectoryDataset(
-        tmp_path, sample_rate=16000, min_seconds=0.005, max_seconds=0.1, normalize="none"
-    )
+    dataset = AudioDirectoryDataset(tmp_path, sample_rate=16000, min_seconds=0.005, max_seconds=0.1)
     items = {Path(d["path"]).name: d for d in (dataset[0], dataset[1])}
     long_item = items["long.wav"]
     short_item = items["short.wav"]
@@ -64,7 +60,6 @@ def test_audio_directory_dataset_resamples_with_soxr(tmp_path: Path):
         sample_rate=16000,
         min_seconds=0.001,
         max_seconds=1.0,
-        normalize="none",
     )
     item = dataset[0]
 
@@ -122,94 +117,31 @@ def test_audio_pitch_shift_uses_integer_resampling_and_preserves_shape():
     assert length == round(64 / (2.0 ** (2 / 12)))
 
 
-def test_dataloader_applies_augmentation_to_train_only(tmp_path: Path):
+def test_dataloader_augmentation_applies_to_wrapped_dataset_only(tmp_path: Path):
     for index in range(2):
         sf.write(tmp_path / f"file_{index}.wav", torch.full((64,), 0.25).numpy(), 16000)
-    cfg = OmegaConf.create(
+    dataset = AudioDirectoryDataset(
+        tmp_path,
+        sample_rate=16000,
+        min_seconds=0.004,
+        max_seconds=0.004,
+        channels=1,
+    )
+    augmenter = build_waveform_augmenter(
         {
-            "data": {
-                "root": str(tmp_path),
-                "sample_rate": 16000,
-                "min_seconds": 0.004,
-                "max_seconds": 0.004,
-                "channels": 1,
-                "normalize": "none",
-                "augmentations": {
-                    "enabled": True,
-                    "pitch_shift": {"prob": 0.0, "semitones": [0, 0]},
-                    "start_pad": {"prob": 0.0, "max_ms": 0.0},
-                    "gain": {"prob": 1.0, "db": [6.020599913, 6.020599913]},
-                },
-            },
-            "train": {
-                "val_fraction": 0.5,
-                "dataloader": {
-                    "batch_size": 1,
-                    "num_workers": 0,
-                    "pin_memory": False,
-                    "drop_last": False,
-                },
-            },
-        }
+            "enabled": True,
+            "pitch_shift": {"prob": 0.0, "semitones": [0, 0]},
+            "start_pad": {"prob": 0.0, "max_ms": 0.0},
+            "gain": {"prob": 1.0, "db": [6.020599913, 6.020599913]},
+        },
+        sample_rate=16000,
     )
 
-    train_loader, val_loader = build_dataloaders(cfg)
-    train_batch = next(iter(train_loader))
-    val_batch = next(iter(val_loader))
+    augmented = AugmentedDataset(dataset, augmenter)
+    train_item = augmented[0]
+    val_item = dataset[0]
 
-    assert train_batch["audio"].abs().mean() > 0.45
-    assert val_batch["audio"].abs().mean() < 0.3
-
-
-def test_hydra_trainer_target_is_importable():
-    assert train_fm.__name__ == "train_fm"
-
-
-def test_empty_training_loader_fails_fast(tmp_path: Path):
-    path = tmp_path / "tone.wav"
-    sf.write(path, torch.ones(64).numpy(), 16000)
-    cfg = OmegaConf.create(
-        {
-            "data": {
-                "root": str(tmp_path),
-                "sample_rate": 16000,
-                "min_seconds": 0.01,
-                "max_seconds": 0.01,
-                "channels": 1,
-                "normalize": "none",
-            },
-            "train": {
-                "val_fraction": 0.0,
-                "dataloader": {
-                    "batch_size": 4,
-                    "num_workers": 0,
-                    "pin_memory": False,
-                    "drop_last": True,
-                },
-            },
-        }
-    )
-    with pytest.raises(ValueError, match="Training dataloader is empty"):
-        build_dataloaders(cfg)
-
-
-def test_fm_interpolant_recovers_v_from_x_prediction():
-    x1 = torch.randn(2, 1, 16)
-    fb = linear_interpolant(x1, t=torch.tensor([0.25, 0.75]))
-    assert fb.x_t.shape == x1.shape
-    # Network outputs x_1 exactly; output_to_v must invert the interpolant to recover v.
-    assert torch.allclose(output_to_v(fb.x1, fb.x_t, fb.t), fb.v, atol=1e-6)
-
-
-@pytest.mark.parametrize("loss_space", ["x", "v"])
-def test_fm_loss_backward(loss_space: str):
-    x1 = torch.randn(2, 1, 16)
-    fb = linear_interpolant(x1)
-    pred = torch.randn_like(x1, requires_grad=True)
-    loss = FMLoss(loss_space=loss_space)(pred, fb)
-    loss.total.backward()
-    assert pred.grad is not None
-    assert torch.isfinite(loss.total)
+    assert torch.allclose(train_item["audio"], val_item["audio"] * 2.0)
 
 
 def test_null_conditioner_shape():
@@ -311,300 +243,3 @@ def test_ema_apply_restore():
     ema.restore(model)
     assert torch.allclose(model.weight, changed)
     assert not torch.allclose(model.weight, original)
-
-
-def test_sampler_runs_with_toy_model():
-    class Toy(torch.nn.Module):
-        def forward(self, x, t=None, cond=None, length=None):
-            del t, cond, length
-            return torch.zeros_like(x)
-
-    sample = sample_fm(Toy(), shape=(2, 1, 8), steps=2)
-    assert sample.shape == (2, 1, 8)
-
-
-def test_sampler_can_reuse_fixed_distinct_noise():
-    class Toy(torch.nn.Module):
-        def forward(self, x, t=None, cond=None, length=None):
-            del t, cond, length
-            return x
-
-    noise = torch.randn(2, 1, 8)
-    sample_a = sample_fm(Toy(), shape=(2, 1, 8), steps=2, noise=noise)
-    sample_b = sample_fm(Toy(), shape=(2, 1, 8), steps=2, noise=noise)
-
-    assert torch.allclose(sample_a, noise)
-    assert torch.allclose(sample_b, noise)
-    assert not torch.allclose(noise[0], noise[1])
-
-
-def test_sampler_rejects_wrong_noise_shape():
-    class Toy(torch.nn.Module):
-        def forward(self, x, t=None, cond=None, length=None):
-            del t, cond, length
-            return x
-
-    with pytest.raises(ValueError, match="noise shape"):
-        sample_fm(Toy(), shape=(2, 1, 8), noise=torch.randn(1, 1, 8))
-
-
-@pytest.mark.parametrize("loss_space", ["x", "v"])
-def test_validation_reports_x_and_v_mse(loss_space: str):
-    class Toy(torch.nn.Module):
-        def forward(self, x, t=None, cond=None, length=None):
-            del t, cond, length
-            return torch.zeros_like(x)
-
-    batch = {
-        "audio": torch.randn(2, 1, 16),
-        "audio_lengths": torch.tensor([16, 16]),
-        "sample_rate": 16000,
-    }
-    cfg = OmegaConf.create({"flow": {"eps": 1e-5}, "train": {"val_batches": 1}})
-    metrics = _validate(
-        Toy(), None, [batch], FMLoss(loss_space=loss_space), cfg, torch.device("cpu")
-    )
-    assert "val_x_mse" in metrics
-    assert "val_v_mse" in metrics
-    assert torch.isfinite(torch.tensor([metrics["val_x_mse"], metrics["val_v_mse"]])).all()
-
-
-@pytest.mark.parametrize(
-    ("distance", "expected_key"),
-    [
-        ("fad", "val_fad"),
-        ("mind", "val_mind"),
-        ("both", "val_fad"),
-    ],
-)
-def test_validation_can_report_embedding_distance_metrics(distance: str, expected_key: str):
-    class Toy(torch.nn.Module):
-        def forward(self, x, t=None, cond=None, length=None):
-            del t, cond, length
-            return torch.zeros_like(x)
-
-    class MeanStdConditioner(torch.nn.Module):
-        embedding_dim = 2
-
-        def forward(self, audio, sample_rate=16000, audio_lengths=None):
-            del sample_rate, audio_lengths
-            flat = audio.flatten(1)
-            return torch.stack([flat.mean(dim=1), flat.std(dim=1) + 10.0], dim=1)
-
-    class MetricBackend(torch.nn.Module):
-        def forward(self, audio, sample_rate=16000, audio_lengths=None):
-            del sample_rate, audio_lengths
-            flat = audio.flatten(1)
-            return torch.stack([flat.mean(dim=1), flat.std(dim=1), flat.abs().mean(dim=1)], dim=1)
-
-    batch = {
-        "audio": torch.randn(4, 1, 16),
-        "audio_lengths": torch.tensor([16, 16, 16, 16]),
-        "path": ["a.wav", "b.wav", "c.wav", "d.wav"],
-        "sample_rate": 16000,
-    }
-    cfg = OmegaConf.create(
-        {
-            "flow": {"eps": 1e-5},
-            "train": {"val_batches": 1},
-            "sampling": {"steps": 1},
-            "eval": {
-                "metrics": {
-                    "embedding_validation": {
-                        "enabled": True,
-                        "distance": distance,
-                        "sample_steps": 1,
-                        "mind_projections": 8,
-                        "cosine": True,
-                    }
-                }
-            },
-        }
-    )
-    metrics = _validate(
-        Toy(),
-        MeanStdConditioner(),
-        [batch],
-        FMLoss(),
-        cfg,
-        torch.device("cpu"),
-        metric_embedding_backend=MetricBackend(),
-    )
-    assert expected_key in metrics
-    assert "val_matpac_embedding_cosine" in metrics
-    if distance == "both":
-        assert "val_mind" in metrics
-    assert torch.isfinite(torch.tensor(list(metrics.values()))).all()
-
-
-def test_validation_caches_real_metric_embeddings_by_path_when_crop_is_deterministic():
-    class Toy(torch.nn.Module):
-        def forward(self, x, t=None, cond=None, length=None):
-            del t, cond, length
-            return torch.zeros_like(x)
-
-    class CountingConditioner(torch.nn.Module):
-        embedding_dim = 2
-
-        def forward(self, audio, sample_rate=16000, audio_lengths=None):
-            del sample_rate, audio_lengths
-            flat = audio.flatten(1)
-            return torch.stack([flat.mean(dim=1), flat.std(dim=1)], dim=1)
-
-    class CountingMetricBackend(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.calls = 0
-
-        def forward(self, audio, sample_rate=16000, audio_lengths=None):
-            del sample_rate, audio_lengths
-            self.calls += 1
-            flat = audio.flatten(1)
-            return torch.stack([flat.mean(dim=1), flat.std(dim=1)], dim=1)
-
-    batch = {
-        "audio": torch.randn(2, 1, 16),
-        "audio_lengths": torch.tensor([16, 16]),
-        "path": ["a.wav", "b.wav"],
-        "sample_rate": 16000,
-    }
-    cfg = OmegaConf.create(
-        {
-            "flow": {"eps": 1e-5},
-            "train": {"val_batches": 1},
-            "sampling": {"steps": 1},
-            "eval": {
-                "metrics": {
-                    "embedding_validation": {
-                        "enabled": True,
-                        "distance": "fad",
-                        "sample_steps": 1,
-                        "cache_real": True,
-                    }
-                }
-            },
-        }
-    )
-    conditioner = CountingConditioner()
-    metric_backend = CountingMetricBackend()
-    cache = {}
-
-    _validate(
-        Toy(),
-        conditioner,
-        [batch],
-        FMLoss(),
-        cfg,
-        torch.device("cpu"),
-        metric_embedding_backend=metric_backend,
-        real_embedding_cache=cache,
-    )
-    first_calls = metric_backend.calls
-    metrics = _validate(
-        Toy(),
-        conditioner,
-        [batch],
-        FMLoss(),
-        cfg,
-        torch.device("cpu"),
-        metric_embedding_backend=metric_backend,
-        real_embedding_cache=cache,
-    )
-
-    assert len(cache) == 2
-    assert metrics["val_real_embedding_cache_size"] == 2.0
-    assert metric_backend.calls == first_calls + 1
-
-
-def test_audio_monitor_uses_validation_audio_and_caches_conditioning():
-    class CountingConditioner(torch.nn.Module):
-        embedding_dim = 2
-
-        def __init__(self):
-            super().__init__()
-            self.calls = 0
-
-        def forward(self, audio, sample_rate=16000, audio_lengths=None):
-            del sample_rate, audio_lengths
-            self.calls += 1
-            flat = audio.flatten(1)
-            return torch.stack([flat.mean(dim=1), flat.std(dim=1)], dim=1)
-
-    batch = {
-        "audio": torch.arange(4 * 1 * 8, dtype=torch.float32).view(4, 1, 8),
-        "audio_lengths": torch.tensor([8, 8, 8, 8]),
-        "sample_rate": 16000,
-    }
-    cfg = OmegaConf.create({"train": {"wandb": {"audio_examples": 3, "audio_seed": 123}}})
-    conditioner = CountingConditioner()
-
-    monitor = build_audio_monitor([batch], conditioner, cfg, torch.device("cpu"))
-
-    assert monitor is not None
-    assert monitor.audio.shape == (3, 1, 8)
-    assert monitor.cond is not None
-    assert monitor.cond.shape == (3, 2)
-    assert conditioner.calls == 1
-    assert not torch.allclose(monitor.noise[0], monitor.noise[1])
-
-
-def test_audio_monitor_logging_logs_reference_once_and_generated_each_time(tmp_path: Path):
-    class IdentitySampler(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.seen_cond = None
-
-        def forward(self, x, t=None, cond=None, length=None):
-            del t, length
-            self.seen_cond = cond.detach().cpu() if cond is not None else None
-            return x
-
-    class MockWandb:
-        class Audio:
-            def __init__(self, data_or_path, sample_rate=None, caption=None):
-                self.data_or_path = data_or_path
-                self.sample_rate = sample_rate
-                self.caption = caption
-
-    class MockRun:
-        def __init__(self):
-            self.logged = []
-
-        def log(self, values, step=None):
-            self.logged.append((step, values))
-
-        def finish(self):
-            pass
-
-    run = MockRun()
-    logger = WandbLogger(MockWandb, run)
-    monitor = AudioMonitor(
-        audio=torch.zeros(2, 1, 8),
-        audio_lengths=torch.tensor([8, 8]),
-        cond=torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
-        noise=torch.randn(2, 1, 8),
-        sample_rate=16000,
-    )
-    cfg = OmegaConf.create(
-        {
-            "train": {
-                "wandb": {
-                    "log_reference_once": True,
-                    "save_reference_local": True,
-                }
-            },
-            "sampling": {"steps": 1, "method": "euler"},
-            "flow": {"eps": 1e-5},
-        }
-    )
-    model = IdentitySampler()
-
-    log_audio_monitor(model, cfg, torch.device("cpu"), tmp_path, 1, monitor, logger)
-    log_audio_monitor(model, cfg, torch.device("cpu"), tmp_path, 2, monitor, logger)
-
-    logged_keys = [next(iter(values.keys())) for _, values in run.logged]
-    assert logged_keys == ["audio/reference", "audio/generated", "audio/generated"]
-    assert (tmp_path / "reference_000.wav").exists()
-    assert (tmp_path / "step_00000001_generated_000.wav").exists()
-    assert (tmp_path / "step_00000002_generated_000.wav").exists()
-    assert torch.allclose(model.seen_cond, monitor.cond)

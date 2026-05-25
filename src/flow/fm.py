@@ -7,43 +7,22 @@ EPS = 1e-5
 
 
 class RectifiedFlow:
-    def __init__(
-        self,
-        t_distribution: str = "logit_normal",
-        logit_mean: float = 0.0,
-        logit_std: float = 1.0,
-    ):
-        if t_distribution not in {"logit_normal", "uniform"}:
-            raise ValueError("t_distribution must be 'logit_normal' or 'uniform'")
-        if logit_std <= 0:
-            raise ValueError("logit_std must be positive")
-        self.t_distribution = t_distribution
-        self.logit_mean = float(logit_mean)
-        self.logit_std = float(logit_std)
+    """Rectified-flow math: linear interpolant, velocity target, loss, ODE sampling.
 
-    def sample_t(
-        self,
-        batch: int,
-        device: torch.device | str,
-        dtype: torch.dtype | None = None,
-    ) -> torch.Tensor:
-        if self.t_distribution == "uniform":
-            t = torch.rand(batch, device=device, dtype=dtype)
-        else:
-            logits = torch.randn(batch, device=device, dtype=dtype)
-            t = (logits * self.logit_std + self.logit_mean).sigmoid()
-        return t.clamp(EPS, 1.0 - EPS)
+    Stateless. The caller supplies the timesteps ``t`` (the trainer owns the timestep
+    distribution); ``noise`` defaults to the flow's Gaussian source ``x0 ~ N(0, I)``.
+    """
 
     def train_tuple(
         self,
         x1: torch.Tensor,
+        t: torch.Tensor,
         noise: torch.Tensor | None = None,
-        t: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x0 = torch.randn_like(x1) if noise is None else noise.to(device=x1.device, dtype=x1.dtype)
         if x0.shape != x1.shape:
             raise ValueError(f"noise shape {tuple(x0.shape)} must match x1 {tuple(x1.shape)}")
-        t = self.sample_t(x1.shape[0], x1.device, x1.dtype) if t is None else t.to(device=x1.device, dtype=x1.dtype)
+        t = t.to(device=x1.device, dtype=x1.dtype)
         t_view = self._time_like(t, x1)
         x_t = (1.0 - t_view) * x0 + t_view * x1
         return x_t, t, x1

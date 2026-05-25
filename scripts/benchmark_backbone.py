@@ -20,20 +20,11 @@ from scripts.model_stats import count_params, format_param_count  # noqa: E402
 
 
 def _dummy_input(cfg, batch_size: int, length: int):
-    io = cfg.get("io", {})
-    channels = int(io.get("channels", 1))
-    if io.get("type") == "stft":
-        freq_bins = int(io.get("freq_bins", 8))
-        frames = max(2, length // int(cfg.get("patching", {}).get("patch_size", 2)))
-        return torch.randn(batch_size, 2 * channels * freq_bins, frames)
-    return torch.randn(batch_size, channels, length)
+    return torch.randn(batch_size, int(cfg.get("channels", 1)), length)
 
 
 def _dummy_cond(cfg, batch_size: int):
-    conditioning = cfg.get("conditioning", {})
-    if conditioning.get("mode", "none") == "none":
-        return None
-    return torch.randn(batch_size, int(conditioning.get("cond_dim", 16)))
+    return torch.randn(batch_size, int(cfg.get("conditioning", {}).get("cond_dim", 16)))
 
 
 def main() -> None:
@@ -49,7 +40,7 @@ def main() -> None:
     model = build_backbone(cfg).eval()
     x = _dummy_input(cfg, args.batch_size, args.length)
     cond = _dummy_cond(cfg, args.batch_size)
-    length = int(cfg.get("io", {}).get("length", args.length)) if cfg.get("_target_", "").endswith("Upsampler") else args.length
+    length = args.length
 
     with torch.inference_mode():
         for _ in range(args.warmup):

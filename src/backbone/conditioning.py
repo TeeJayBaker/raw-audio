@@ -4,43 +4,21 @@ import math
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
-
-def conditioning_mode(conditioning: dict | None) -> str:
-    return (conditioning or {}).get("mode", "none")
-
-
-def prepare_conditioning(
-    t: torch.Tensor | None,
-    cond: torch.Tensor | None,
-    mode: str,
-    cond_dim: int,
-) -> torch.Tensor | None:
-    if mode == "none":
-        if t is not None or cond is not None:
-            raise ValueError("Received conditioning but this backbone has no configured conditioning path")
-        return None
-
-    if cond is None:
-        if t is None:
-            return None
-        cond = t.new_zeros(t.shape[0], cond_dim)
-    if t is None:
-        return cond
-    if cond.shape != t.shape:
-        raise ValueError(f"Expected conditioning shape {tuple(t.shape)}, got {tuple(cond.shape)}")
-    return t + cond
 
 class TimeEmbedding(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int | None = None, features: int | None = None, time_scale: float = 1.0):
+    """Sinusoidal scalar-time embedding followed by a small MLP."""
+
+    def __init__(self, dim: int, features: int | None = None, time_scale: float = 1.0):
         super().__init__()
         self.dim = dim
         self.time_scale = float(time_scale)
         self.features = features or min(256, max(16, dim))
         if self.features % 2:
             self.features += 1
-        hidden_dim = hidden_dim or max(dim, self.features)
-        self.mlp = nn.Sequential(nn.Linear(self.features, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, dim))
+        hidden = max(dim, self.features)
+        self.mlp = nn.Sequential(nn.Linear(self.features, hidden), nn.SiLU(), nn.Linear(hidden, dim))
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         if t.ndim == 2 and t.shape[1] == self.dim:
@@ -58,81 +36,36 @@ class TimeEmbedding(nn.Module):
         return self.mlp(torch.cat([torch.sin(args), torch.cos(args)], dim=1))
 
 
-class Conditioning(nn.Module):
-    def __init__(
-        self,
-        channels: int,
-        mode: str = "none",
-        cond_dim: int | None = None,
-        pool: str | None = None,
-        hidden_dim: int | None = None,
-    ):
+class AdaLN(nn.Module):
+    """AdaLN-Zero modulation: maps a global conditioning vector to `groups`
+    zero-initialised modulation tensors of width `channels` (so the block is an
+    identity at initialisation)."""
+
+    def __init__(self, cond_dim: int, channels: int, groups: int):
         super().__init__()
-        self.mode = mode
-        self.channels = channels
-        self.cond_dim = cond_dim or channels
-        self.pool = pool
-        hidden_dim = hidden_dim or max(channels, self.cond_dim)
-        if mode == "none":
-            self.proj = None
-        elif mode == "add":
-            self.proj = self._mlp(channels, hidden_dim)
-        elif mode == "film":
-            self.proj = self._mlp(channels * 2, hidden_dim)
-        elif mode in {"adaln", "adaln_zero"}:
-            self.proj = self._mlp(channels * 2, hidden_dim, zero_final=mode == "adaln_zero")
-        elif mode == "context_tokens":
-            self.proj = None
-        else:
-            raise ValueError(f"Unknown conditioning mode: {mode}")
+        self.groups = groups
+        self.proj = nn.Linear(cond_dim, groups * channels)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
 
-    def _mlp(self, out_dim: int, hidden_dim: int, zero_final: bool = False) -> nn.Sequential:
-        final = nn.Linear(hidden_dim, out_dim)
-        if zero_final:
-            nn.init.zeros_(final.weight)
-            nn.init.zeros_(final.bias)
-        return nn.Sequential(nn.Linear(self.cond_dim, hidden_dim), nn.SiLU(), final)
+    def forward(self, cond: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        return self.proj(F.silu(cond)).chunk(self.groups, dim=-1)
 
-    def _prepare(self, cond: torch.Tensor) -> torch.Tensor:
+
+def prepare_conditioning(
+    t_embed: torch.Tensor | None,
+    cond: torch.Tensor | None,
+    cond_dim: int,
+) -> torch.Tensor:
+    """Combine the embedded timestep and the optional global conditioning vector
+    into a single [B, cond_dim] tensor. At least one of the two must be present."""
+    if cond is not None:
         if cond.ndim == 1:
-            cond = cond[:, None]
-        elif cond.ndim == 3 and cond.shape[-1] == 1:
-            cond = cond.squeeze(-1)
-        elif cond.ndim > 2:
-            if self.pool == "mean":
-                cond = cond.mean(dim=tuple(range(2, cond.ndim)))
-            else:
-                raise ValueError(
-                    "Conditioning must be global [B], [B, C], or [B, C, 1]. "
-                    "Set conditioning.pool: mean to accept frame-rate conditioning."
-                )
-        if cond.ndim != 2:
-            raise ValueError(f"Unsupported conditioning shape: {tuple(cond.shape)}")
-        if cond.shape[1] == 1 and self.cond_dim != 1:
-            cond = cond.expand(-1, self.cond_dim)
-        if cond.shape[1] != self.cond_dim:
-            raise ValueError(f"Expected conditioning dim {self.cond_dim}, got {cond.shape[1]}")
+            cond = cond[None]  # bare [cond_dim] -> [1, cond_dim]
+        if cond.ndim != 2 or cond.shape[1] != cond_dim:
+            raise ValueError(f"Conditioning must be shaped [B, {cond_dim}], got {tuple(cond.shape)}")
+    if t_embed is None:
+        if cond is None:
+            raise ValueError("Backbone forward needs a timestep `t` and/or conditioning `cond`")
         return cond
-
-    def forward(self, x: torch.Tensor, cond: torch.Tensor | None = None) -> torch.Tensor:
-        if self.mode in {"none", "context_tokens"} or cond is None:
-            return x
-        cond = self._prepare(cond)
-        params = self.proj(cond)
-        while params.ndim < x.ndim:
-            params = params.unsqueeze(-1)
-        if self.mode == "add":
-            return x + params
-        scale, shift = params.chunk(2, dim=1)
-        return x * (1 + scale) + shift
-
-
-def make_conditioning(config: dict | None, channels: int) -> Conditioning:
-    config = config or {"mode": "none"}
-    return Conditioning(
-        channels,
-        mode=config.get("mode", "none"),
-        cond_dim=config.get("cond_dim"),
-        pool=config.get("pool"),
-        hidden_dim=config.get("hidden_dim"),
-    )
+    return t_embed if cond is None else t_embed + cond

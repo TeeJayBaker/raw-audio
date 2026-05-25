@@ -24,33 +24,26 @@ class STFTConfig:
     def from_dict(cls, cfg: dict | None) -> STFTConfig:
         cfg = cfg or {}
         n_fft = int(cfg.get("n_fft", 1024))
-        freq_bins = cfg.get("freq_bins")
-        if freq_bins is not None and int(freq_bins) != n_fft // 2 + 1:
-            raise ValueError(f"freq_bins={freq_bins} does not match n_fft // 2 + 1 ({n_fft // 2 + 1})")
         hop_length = int(cfg.get("hop_length", max(1, n_fft // 4)))
-        win_length = cfg.get("win_length", n_fft)
-        return cls(n_fft=n_fft, hop_length=hop_length, win_length=int(win_length))
+        win_length = int(cfg.get("win_length", n_fft))
+        return cls(n_fft=n_fft, hop_length=hop_length, win_length=win_length)
 
     @property
     def freq_bins(self) -> int:
         return self.n_fft // 2 + 1
 
 
-def _window(cfg: STFTConfig, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    return torch.hann_window(cfg.win_length or cfg.n_fft, device=device, dtype=dtype)
-
-
 def waveform_to_stft(x: torch.Tensor, cfg: STFTConfig) -> torch.Tensor:
-    """Return complex STFT as [B, C, F, frames]."""
+    """Complex STFT [B, C, F, frames] from waveform [B, C, T]."""
     x = as_waveform(x)
     b, c, length = x.shape
-    flat = x.reshape(b * c, length)
+    window = torch.hann_window(cfg.win_length or cfg.n_fft, device=x.device, dtype=x.dtype)
     spec = torch.stft(
-        flat,
+        x.reshape(b * c, length),
         n_fft=cfg.n_fft,
         hop_length=cfg.hop_length,
         win_length=cfg.win_length,
-        window=_window(cfg, x.device, x.dtype),
+        window=window,
         center=True,
         return_complex=True,
     )
@@ -58,17 +51,17 @@ def waveform_to_stft(x: torch.Tensor, cfg: STFTConfig) -> torch.Tensor:
 
 
 def stft_to_waveform(spec: torch.Tensor, cfg: STFTConfig, length: int | None = None) -> torch.Tensor:
-    """Invert complex STFT shaped [B, C, F, frames] to [B, C, T]."""
+    """Waveform [B, C, T] from complex STFT [B, C, F, frames]."""
     if not torch.is_complex(spec) or spec.ndim != 4:
         raise ValueError(f"Expected complex STFT [B, C, F, T], got {tuple(spec.shape)}")
     b, c, _f, frames = spec.shape
-    flat = spec.reshape(b * c, spec.shape[-2], frames)
+    window = torch.hann_window(cfg.win_length or cfg.n_fft, device=spec.device, dtype=spec.real.dtype)
     wav = torch.istft(
-        flat,
+        spec.reshape(b * c, spec.shape[-2], frames),
         n_fft=cfg.n_fft,
         hop_length=cfg.hop_length,
         win_length=cfg.win_length,
-        window=_window(cfg, spec.device, spec.real.dtype),
+        window=window,
         center=True,
         length=length,
     )
@@ -76,6 +69,7 @@ def stft_to_waveform(spec: torch.Tensor, cfg: STFTConfig, length: int | None = N
 
 
 def complex_to_channels(spec: torch.Tensor) -> torch.Tensor:
+    """[B, C, F, T] complex -> [B, 2*C*F, T] real (real bands then imag bands)."""
     if not torch.is_complex(spec) or spec.ndim != 4:
         raise ValueError(f"Expected complex STFT [B, C, F, T], got {tuple(spec.shape)}")
     b, c, f, t = spec.shape
@@ -85,6 +79,7 @@ def complex_to_channels(spec: torch.Tensor) -> torch.Tensor:
 
 
 def channels_to_complex(x: torch.Tensor, channels: int, freq_bins: int) -> torch.Tensor:
+    """Inverse of complex_to_channels."""
     if x.ndim != 3:
         raise ValueError(f"Expected channel STFT [B, 2*C*F, T], got {tuple(x.shape)}")
     expected = 2 * channels * freq_bins
@@ -97,30 +92,12 @@ def channels_to_complex(x: torch.Tensor, channels: int, freq_bins: int) -> torch
     return torch.complex(real, imag)
 
 
-def pad_or_trim_frames(x: torch.Tensor, frames: int) -> torch.Tensor:
-    diff = x.shape[-1] - frames
+def center_crop_or_pad(x: torch.Tensor, length: int) -> torch.Tensor:
+    diff = x.shape[-1] - length
     if diff == 0:
         return x
     if diff > 0:
-        return x[..., :frames]
-    return F.pad(x, (0, -diff))
-
-
-def stft_to_channels(x: torch.Tensor) -> torch.Tensor:
-    if torch.is_complex(x):
-        return complex_to_channels(x)
-    if x.ndim == 4:
-        b, c, f, t = x.shape
-        return x.reshape(b, c * f, t)
-    if x.ndim == 3:
-        return x
-    raise ValueError(f"Unsupported STFT-like tensor shape: {tuple(x.shape)}")
-
-
-def channels_to_stft_like(x: torch.Tensor, freq_bins: int | None = None) -> torch.Tensor:
-    if freq_bins is None:
-        return x
-    b, c, t = x.shape
-    if c % freq_bins != 0:
-        return x
-    return x.reshape(b, c // freq_bins, freq_bins, t)
+        start = diff // 2
+        return x[..., start : start + length]
+    left = (-diff) // 2
+    return F.pad(x, (left, -diff - left))

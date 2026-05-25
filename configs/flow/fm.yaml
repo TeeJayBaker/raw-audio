@@ -4,3 +4,8 @@ t_encoding:
   type: sinusoidal
   scale: 100.0
 eps: 1e-5
+# Training timestep sampling (a training-time choice; the trainer reads these and
+# passes t into RectifiedFlow.train_tuple). 'logit_normal' biases toward the middle.
+t_distribution: logit_normal  # 'logit_normal' or 'uniform'
+logit_mean: 0.0
+logit_std: 1.0

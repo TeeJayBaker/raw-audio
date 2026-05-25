@@ -1,21 +1,16 @@
-_target_: backbone.transformers.Transformer
+_target_: backbone.transformer.Transformer
 name: waveform_transformer
 sample_rate: 48000
-io:
-  type: waveform
-  channels: 1
-  out_channels: 1
+channels: 1
+out_channels: 1
 patching:
-  type: 1d
   patch_size: 512
-block:
-  type: transformer
-  dim: 512
-  depth: 12
-  heads: 8
 head:
   type: conv
   kernel_size: 13
+block:
+  dim: 512
+  depth: 12
+  heads: 8
 conditioning:
-  mode: adaln_zero
   cond_dim: 512

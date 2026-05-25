@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import torch
@@ -23,12 +24,16 @@ def build_embedding(cfg: dict[str, Any] | None, device: str | torch.device = "cp
     kind = str(cfg.pop("type", cfg.pop("backend", "none"))).lower()
     if kind == "none":
         return None
-    if kind == "null":
-        return NullEmbedding(**cfg)
-    if kind in _EMBEDDINGS:
+    if kind not in _EMBEDDINGS:
+        raise ValueError(f"Unknown embedding type/backend: {kind}")
+    target = _EMBEDDINGS[kind]
+    if kind != "null":
         cfg.setdefault("device", str(device))
-        return _EMBEDDINGS[kind](**cfg)
-    raise ValueError(f"Unknown embedding type/backend: {kind}")
+    # Hydra deep-merges configs, so derived experiments can carry keys meant for a
+    # different backend (e.g. matpac fields left over when overriding type=null).
+    # Keep only the kwargs this backend's constructor accepts.
+    accepted = set(inspect.signature(target).parameters)
+    return target(**{key: value for key, value in cfg.items() if key in accepted})
 
 
 def build_embedding_backend(cfg: dict[str, Any], device: str | torch.device = "cpu") -> nn.Module | None:

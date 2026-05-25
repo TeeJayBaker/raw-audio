@@ -9,7 +9,7 @@ defaults:
   - _self_
 
 trainer:
-  _target_: fm_trainer.train_fm
+  _target_: trainer.RFTrainer
 
 backbone:
   conditioning:
@@ -24,12 +24,10 @@ conditioner:
   compile_encoder: false
 
 loss:
-  loss_space: v
-  primary: mse
-  mr_stft_weight: 0.0
-  mr_stft_log_weight: 0.0
-  spectral_energy_inverse_weighting: true  # reports the weighting stat; does NOT add a loss term
-  spectral_energy_weight: 1.0  # explicit aux loss weight (previously coupled to the flag above)
+  loss_space: v  # 'v' (velocity) or 'x' (direct prediction)
+  primary: mse  # 'mse' or 'l1'
+  mr_stft_weight: 0.0  # multi-resolution STFT auxiliary loss weight (0 disables)
+  mr_stft_log_weight: 0.0  # log-magnitude term weight within MR-STFT
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -44,6 +42,9 @@ train:
   amp: true
   ema_decay: 0.999
   grad_clip: 1.0
+  warmup_steps: 100  # linear LR warmup, then cosine decay to min_lr_ratio over max_steps
+  min_lr_ratio: 0.0  # cosine decay floor as a fraction of the base LR
+  resume: null  # null | "auto" (latest checkpoint in run_dir) | path to a .pt
   val_fraction: 0.02
   log_every: 10
   val_every: 250
@@ -60,3 +61,4 @@ sampling:
   batch_size: 1
   steps: 1
   method: euler  # 'heun' adds a corrector step (2× NFE) for noticeably smoother trajectories
+  guidance_scale: 1.0  # >1.0 enables classifier-free guidance at sampling time

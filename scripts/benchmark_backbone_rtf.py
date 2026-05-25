@@ -16,44 +16,17 @@ if str(ROOT) not in sys.path:
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from backbone.audio_ops import STFTConfig  # noqa: E402
 from backbone.factory import build_backbone, load_backbone_config  # noqa: E402
 from scripts.model_stats import count_params, format_param_count  # noqa: E402
 
 
 def _conditioning(cfg, batch_size: int) -> torch.Tensor | None:
-    conditioning = cfg.get("conditioning", {})
-    if conditioning.get("mode", "none") == "none":
-        return None
-    return torch.randn(batch_size, int(conditioning.get("cond_dim", 16)))
-
-
-def _total_upsample(cfg) -> int:
-    product = 1
-    for factor in cfg.get("decoder", {}).get("up_factors", []):
-        product *= int(factor)
-    return product
+    return torch.randn(batch_size, int(cfg.get("conditioning", {}).get("cond_dim", 16)))
 
 
 def _input_for_one_second(cfg, batch_size: int, output_samples: int) -> tuple[torch.Tensor, int]:
-    io = cfg.get("io", {})
-    channels = int(io.get("channels", 1))
-    target = output_samples
-
-    if io.get("type") == "stft":
-        stft = STFTConfig.from_dict(io)
-        # torch.stft(center=True) emits floor(samples / hop) + 1 frames.
-        frames = output_samples // stft.hop_length + 1
-        x = torch.randn(batch_size, channels, stft.freq_bins, frames, dtype=torch.complex64)
-        return x, target
-
-    if cfg.get("_target_", "").endswith("Upsampler") and io.get("input_projection") == "stft":
-        stft = STFTConfig.from_dict(io.get("stft", io))
-        required_frames = (output_samples + _total_upsample(cfg) - 1) // _total_upsample(cfg)
-        input_samples = max(stft.hop_length, (required_frames - 1) * stft.hop_length)
-        return torch.randn(batch_size, int(io.get("input_channels", 1)), input_samples), target
-
-    return torch.randn(batch_size, channels, output_samples), target
+    channels = int(cfg.get("channels", 1))
+    return torch.randn(batch_size, channels, output_samples), output_samples
 
 
 def benchmark(config: Path, batch_size: int, seconds: float, warmup: int, iters: int, threads: int | None) -> dict[str, str | float | int]:
@@ -83,7 +56,7 @@ def benchmark(config: Path, batch_size: int, seconds: float, warmup: int, iters:
         "config": str(config),
         "name": str(cfg.get("name", config.stem)),
         "target": str(cfg.get("_target_", "")),
-        "io": str(cfg.get("io", {}).get("type", "waveform")),
+        "io": "internal_stft" if (cfg.get("stft") is not None or cfg.get("branches") is not None) else "waveform",
         "params": count_params(model),
         "params_h": format_param_count(count_params(model)),
         "input_shape": tuple(x.shape),
