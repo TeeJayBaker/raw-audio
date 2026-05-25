@@ -12,6 +12,9 @@ metrics:
     mind_projections: 256
     cosine: false
     cache_real: true
+    density_coverage:
+      enabled: false
+      k: 5  # k-NN radius for the real manifold; standard from Naeem et al. 2020
   fad:
     enabled: false
     status: available_via_embedding_validation
@@ -25,4 +28,4 @@ metrics:
     status: placeholder
   density_coverage:
     enabled: false
-    status: placeholder
+    status: available_via_embedding_validation

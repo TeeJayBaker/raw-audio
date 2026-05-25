@@ -1,3 +1,4 @@
+# Max batch size at 4 s @ 48 kHz, MATPAC cond, single RTX 4090 24 GiB: 119 (AMP on, bf16).
 _target_: backbone.transformer.Transformer
 name: stft_transformer
 sample_rate: 48000
@@ -16,4 +17,4 @@ block:
   depth: 12
   heads: 8
 conditioning:
-  cond_dim: 512
+  cond_dim: 384  # matches MATPAC's native embedding dim

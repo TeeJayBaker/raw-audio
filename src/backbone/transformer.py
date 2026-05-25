@@ -122,5 +122,6 @@ class Transformer(nn.Module):
         if self.stft is not None:
             y = center_crop_or_pad(y, h_in.shape[-1])
             spec = channels_to_complex(y, self.out_channels, self.stft.freq_bins)
-            return stft_to_waveform(spec, self.stft, length=target)
-        return center_crop_or_pad(self.head(y), target)
+            return stft_to_waveform(spec, self.stft, length=target)  # fp32
+        # fp32 audio out regardless of AMP state (ConvHead/Identity stays bf16 under AMP).
+        return center_crop_or_pad(self.head(y), target).float()

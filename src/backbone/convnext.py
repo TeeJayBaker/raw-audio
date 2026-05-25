@@ -31,9 +31,12 @@ class IStftHead(nn.Module):
         if self.parameterisation == "magphase":
             b, _cf, t = y.shape
             mag, phase = y.split(self.out_channels * self.stft.freq_bins, dim=1)
-            mag = mag.reshape(b, self.out_channels, self.stft.freq_bins, t)
-            phase = phase.reshape(b, self.out_channels, self.stft.freq_bins, t)
-            return torch.polar(torch.exp(torch.clamp(mag, max=1e2)), phase)
+            # torch.polar needs fp32 inputs; torch.exp under autocast promotes to fp32
+            # but phase stays bf16, so we'd hit a Float/BFloat16 mismatch under AMP.
+            with torch.amp.autocast(device_type=y.device.type, enabled=False):
+                mag = mag.float().reshape(b, self.out_channels, self.stft.freq_bins, t)
+                phase = phase.float().reshape(b, self.out_channels, self.stft.freq_bins, t)
+                return torch.polar(torch.exp(torch.clamp(mag, max=1e2)), phase)
         return channels_to_complex(y, self.out_channels, self.stft.freq_bins)
 
     def forward(self, x: torch.Tensor, length: int) -> torch.Tensor:
@@ -154,4 +157,5 @@ class ConvNeXt(nn.Module):
         target = int(length or x.shape[-1])
         t_embed = self.time_embed(t) if t is not None else None
         cond = prepare_conditioning(t_embed, cond, self.cond_dim)
-        return sum(branch(x, cond, target) for branch in self.branches)
+        # fp32 audio out regardless of head (WaveNeXtHead would otherwise return bf16 under AMP).
+        return sum(branch(x, cond, target) for branch in self.branches).float()

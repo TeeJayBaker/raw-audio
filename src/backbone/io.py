@@ -34,37 +34,44 @@ class STFTConfig:
 
 
 def waveform_to_stft(x: torch.Tensor, cfg: STFTConfig) -> torch.Tensor:
-    """Complex STFT [B, C, F, frames] from waveform [B, C, T]."""
+    """Complex STFT [B, C, F, frames] from waveform [B, C, T]. Always runs in fp32
+    (torch.stft doesn't support bf16/half), so this is safe inside an autocast block."""
     x = as_waveform(x)
     b, c, length = x.shape
-    window = torch.hann_window(cfg.win_length or cfg.n_fft, device=x.device, dtype=x.dtype)
-    spec = torch.stft(
-        x.reshape(b * c, length),
-        n_fft=cfg.n_fft,
-        hop_length=cfg.hop_length,
-        win_length=cfg.win_length,
-        window=window,
-        center=True,
-        return_complex=True,
-    )
+    with torch.amp.autocast(device_type=x.device.type, enabled=False):
+        x = x.float()
+        window = torch.hann_window(cfg.win_length or cfg.n_fft, device=x.device, dtype=torch.float32)
+        spec = torch.stft(
+            x.reshape(b * c, length),
+            n_fft=cfg.n_fft,
+            hop_length=cfg.hop_length,
+            win_length=cfg.win_length,
+            window=window,
+            center=True,
+            return_complex=True,
+        )
     return spec.reshape(b, c, cfg.freq_bins, spec.shape[-1])
 
 
 def stft_to_waveform(spec: torch.Tensor, cfg: STFTConfig, length: int | None = None) -> torch.Tensor:
-    """Waveform [B, C, T] from complex STFT [B, C, F, frames]."""
+    """Waveform [B, C, T] from complex STFT [B, C, F, frames]. Always runs / returns
+    in fp32 (torch.istft doesn't support bf16/half) — safe inside an autocast block."""
     if not torch.is_complex(spec) or spec.ndim != 4:
         raise ValueError(f"Expected complex STFT [B, C, F, T], got {tuple(spec.shape)}")
     b, c, _f, frames = spec.shape
-    window = torch.hann_window(cfg.win_length or cfg.n_fft, device=spec.device, dtype=spec.real.dtype)
-    wav = torch.istft(
-        spec.reshape(b * c, spec.shape[-2], frames),
-        n_fft=cfg.n_fft,
-        hop_length=cfg.hop_length,
-        win_length=cfg.win_length,
-        window=window,
-        center=True,
-        length=length,
-    )
+    with torch.amp.autocast(device_type=spec.device.type, enabled=False):
+        if spec.dtype != torch.complex64:
+            spec = spec.to(torch.complex64)
+        window = torch.hann_window(cfg.win_length or cfg.n_fft, device=spec.device, dtype=torch.float32)
+        wav = torch.istft(
+            spec.reshape(b * c, spec.shape[-2], frames),
+            n_fft=cfg.n_fft,
+            hop_length=cfg.hop_length,
+            win_length=cfg.win_length,
+            window=window,
+            center=True,
+            length=length,
+        )
     return wav.reshape(b, c, wav.shape[-1])
 
 
@@ -79,17 +86,20 @@ def complex_to_channels(spec: torch.Tensor) -> torch.Tensor:
 
 
 def channels_to_complex(x: torch.Tensor, channels: int, freq_bins: int) -> torch.Tensor:
-    """Inverse of complex_to_channels."""
+    """Inverse of complex_to_channels. Casts to fp32 because torch.complex doesn't
+    accept bf16/half inputs — keeps this safe inside an autocast block."""
     if x.ndim != 3:
         raise ValueError(f"Expected channel STFT [B, 2*C*F, T], got {tuple(x.shape)}")
     expected = 2 * channels * freq_bins
     if x.shape[1] != expected:
         raise ValueError(f"Expected {expected} STFT channels, got {x.shape[1]}")
     b, _cf, t = x.shape
-    real, imag = x.split(channels * freq_bins, dim=1)
-    real = real.reshape(b, channels, freq_bins, t)
-    imag = imag.reshape(b, channels, freq_bins, t)
-    return torch.complex(real, imag)
+    with torch.amp.autocast(device_type=x.device.type, enabled=False):
+        x = x.float()
+        real, imag = x.split(channels * freq_bins, dim=1)
+        real = real.reshape(b, channels, freq_bins, t)
+        imag = imag.reshape(b, channels, freq_bins, t)
+        return torch.complex(real, imag)
 
 
 def center_crop_or_pad(x: torch.Tensor, length: int) -> torch.Tensor:

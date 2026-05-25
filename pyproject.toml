@@ -6,6 +6,7 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "torch>=2.4",
     "torchaudio",
+    "torchvision",
     "soundfile",
     "librosa",
     "numpy",
@@ -17,6 +18,7 @@ dependencies = [
     "arxiv",
     "hydra-core",
     "wandb",
+    "laion-clap",
 ]
 
 [dependency-groups]
@@ -29,6 +31,18 @@ dev = [
 # Modules are imported from src/ via PYTHONPATH or pytest's pythonpath setting.
 [tool.uv]
 package = false
+
+# Pin torch family to the CUDA 12.1 wheels so we resolve against this host's
+# NVIDIA driver (545.x supports up to CUDA 12.3; cu124/cu130 wheels need newer).
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchaudio = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]

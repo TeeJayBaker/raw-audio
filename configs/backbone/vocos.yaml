@@ -1,3 +1,4 @@
+# Max batch size at 4 s @ 48 kHz, MATPAC cond, single RTX 4090 24 GiB: 353 (AMP on, bf16).
 _target_: backbone.convnext.ConvNeXt
 name: vocos
 sample_rate: 48000
@@ -19,4 +20,4 @@ block:
   expansion: 3
   layer_scale: "1/depth"
 conditioning:
-  cond_dim: 512
+  cond_dim: 384  # matches MATPAC's native embedding dim

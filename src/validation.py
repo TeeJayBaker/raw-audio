@@ -6,6 +6,7 @@ import torch
 
 from ema import ema_swapped
 from eval.audio_metrics import (
+    density_coverage,
     embedding_cosine_score,
     frechet_audio_distance,
     monge_audio_distance,
@@ -89,6 +90,18 @@ def _finalize_embedding_metrics(
             metrics["val_mind"] = float(mind["mind"].detach().cpu())
         else:
             metrics["val_mind_skipped"] = 1.0
+    dc_cfg = dict(embedding_cfg.get("density_coverage", {}) or {})
+    if bool(dc_cfg.get("enabled", False)):
+        if real_metric and fake_metric:
+            dc = density_coverage(
+                torch.cat(real_metric),
+                torch.cat(fake_metric),
+                k=int(dc_cfg.get("k", 5)),
+            )
+            metrics["val_density"] = float(dc["density"].detach().cpu())
+            metrics["val_coverage"] = float(dc["coverage"].detach().cpu())
+        else:
+            metrics["val_density_coverage_skipped"] = 1.0
     return metrics
 
 
@@ -102,7 +115,8 @@ def validate_metrics(trainer) -> dict[str, float]:
     embedding_cfg = embedding_metric_cfg(cfg)
     enabled = bool(embedding_cfg.get("enabled", False))
     distance = str(embedding_cfg.get("distance", "none")).lower()
-    needs_backend = distance in {"fad", "mind", "both"}
+    wants_dc = bool((embedding_cfg.get("density_coverage", {}) or {}).get("enabled", False))
+    needs_backend = distance in {"fad", "mind", "both"} or wants_dc
     wants_cosine = bool(embedding_cfg.get("cosine", False))
     cache = trainer.real_embedding_cache if enabled and bool(embedding_cfg.get("cache_real", True)) else None
     max_batches = int(cfg.train.get("val_batches", 1))

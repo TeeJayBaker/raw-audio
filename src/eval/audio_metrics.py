@@ -146,9 +146,11 @@ def monge_audio_distance(
 
     delta = real_projected - fake_projected
     per_projection = delta.pow(2).mean(dim=0) if squared else delta.abs().mean(dim=0)
+    # Authors scale by 3·D so MIND lives in roughly the same range as FAD.
+    scale = 3.0 * real_embeddings.shape[1]
     return {
-        "mind": per_projection.mean(),
-        "per_projection": per_projection,
+        "mind": scale * per_projection.mean(),
+        "per_projection": scale * per_projection,
         "projections": torch.tensor(projections, device=real_embeddings.device),
     }
 
