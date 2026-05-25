@@ -11,7 +11,7 @@ conditioner:
 
 data:
   root: /media/storage/samples/samples_from_mars/one_shots
-  # sample_rate, min_seconds=0.1, max_seconds=4.0, channels=1 inherited from audio_directory.yaml
+  # sample_rate, min_seconds=0.05, max_seconds=4.0, channels=1 inherited from audio_directory.yaml
 
 train:
   run_dir: runs/fm-oneshots-mars-200k

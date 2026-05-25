@@ -66,19 +66,22 @@ def wandb_val_metrics(metrics: dict[str, float]) -> dict[str, float]:
 
 
 def save_wavs(
-    audio: torch.Tensor,
+    audio: torch.Tensor | list[torch.Tensor],
     sample_rate: int,
     sample_dir: Path,
     pattern: str,
 ) -> list[Path]:
-    """Write a [B, C, T] batch to ``sample_dir`` as wavs named by ``pattern.format(index=i)``."""
+    """Write [C, T] clips to ``sample_dir`` named by ``pattern.format(index=i)``.
+
+    Accepts a stacked [B, C, T] tensor or a list of variable-length [C, T] clips.
+    """
     import soundfile as sf
 
     sample_dir.mkdir(parents=True, exist_ok=True)
-    audio = audio.detach().cpu().clamp(-1.0, 1.0)
     paths = []
     for index, example in enumerate(audio):
         path = sample_dir / pattern.format(index=index)
+        example = example.detach().cpu().clamp(-1.0, 1.0)
         sf.write(path, example.transpose(0, 1).numpy(), sample_rate)
         paths.append(path)
     return paths

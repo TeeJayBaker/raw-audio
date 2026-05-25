@@ -11,6 +11,8 @@ class RectifiedFlow:
 
     Stateless. The caller supplies the timesteps ``t`` (the trainer owns the timestep
     distribution); ``noise`` defaults to the flow's Gaussian source ``x0 ~ N(0, I)``.
+    ``sample`` divides its output by ``lift_scale`` to undo the trainer's amplitude lift
+    (default 1.0 = no-op); the caller passes the data config's value.
     """
 
     def train_tuple(
@@ -61,6 +63,7 @@ class RectifiedFlow:
         steps: int = 1,
         method: str = "euler",
         guidance_scale: float = 1.0,
+        lift_scale: float = 1.0,
     ) -> torch.Tensor:
         if steps < 1:
             raise ValueError("steps must be >= 1")
@@ -90,7 +93,8 @@ class RectifiedFlow:
             t_next = grid[i + 1].expand(batch)
             v_next = self._model_v(model, x_next, t_next, cond, length, guidance_scale)
             x = x + 0.5 * dt * (v + v_next)
-        return x
+        # ``lift_scale`` undoes the trainer's WavFlow amplitude lift; 1.0 (default) is a no-op.
+        return x / lift_scale
 
     def _model_v(
         self,

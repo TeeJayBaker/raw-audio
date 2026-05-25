@@ -81,6 +81,17 @@ def test_sampler_uses_model_device_and_fixed_noise():
     assert not torch.allclose(noise[0], noise[1])
 
 
+def test_sampler_unlifts_output_by_lift_scale():
+    flow = RectifiedFlow()
+    model = ToyModel()
+    noise = torch.randn(2, 1, 8)
+
+    baseline = flow.sample(model, shape=(2, 1, 8), noise=noise, steps=2)
+    lifted = flow.sample(model, shape=(2, 1, 8), noise=noise, steps=2, lift_scale=2.0)
+
+    assert torch.allclose(lifted, baseline / 2.0)
+
+
 def test_sampler_rejects_wrong_noise_shape():
     flow = RectifiedFlow()
     model = ToyModel()

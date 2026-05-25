@@ -1,9 +1,13 @@
 root: data/fm-baseline
 sample_rate: 48000
-min_seconds: 0.1
+min_seconds: 0.05
 max_seconds: 4.0
 channels: 1
+# WavFlow amplitude lift — a dataset property (crest-factor dependent). Applied to the target by the
+# trainer (after the conditioner sees natural audio), undone by RectifiedFlow.sample.
 rms_lift: false
+rms_target: 0.33
+lift_scale: 3.0
 bucket_pool_multiplier: 100
 augmentations:
   enabled: true

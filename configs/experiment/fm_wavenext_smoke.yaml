@@ -29,7 +29,6 @@ data:
   min_seconds: 0.032
   max_seconds: 0.032
   channels: 1
-  rms_lift: false
   augmentations:
     enabled: false
 

@@ -66,12 +66,9 @@ class AudioDirectoryDataset(Dataset[dict[str, Any]]):
         self,
         root: str | Path,
         sample_rate: int = 48000,
-        min_seconds: float = 0.1,
+        min_seconds: float = 0.05,
         max_seconds: float = 4.0,
         channels: int = 1,
-        rms_lift: bool = False,
-        rms_target: float = 0.33,
-        lift_scale: float = 3.0,
         exts: list[str] | None = None,
     ):
         self.root = Path(root).expanduser()
@@ -83,9 +80,6 @@ class AudioDirectoryDataset(Dataset[dict[str, Any]]):
         if self.min_samples > self.max_samples:
             raise ValueError("min_seconds must not exceed max_seconds")
         self.channels = int(channels)
-        self.rms_lift = bool(rms_lift)
-        self.rms_target = float(rms_target)
-        self.lift_scale = float(lift_scale)
         self.files = discover_audio_files(self.root, set(exts) if exts else None)
         self.durations = self._scan_durations()
 
@@ -115,12 +109,7 @@ class AudioDirectoryDataset(Dataset[dict[str, Any]]):
 
     def _normalize(self, audio: np.ndarray) -> np.ndarray:
         peak = max(float(np.abs(audio).max()), 1e-8)
-        audio = audio / peak
-        if self.rms_lift:
-            # WavFlow (2605.18749 §3.2) amplitude lift; inverse 1/lift_scale at sampling.
-            rms = max(float(np.sqrt(np.mean(audio.astype(np.float64) ** 2))), 1e-8)
-            audio = np.clip(self.lift_scale * (self.rms_target / rms) * audio, -1.0, 1.0).astype(audio.dtype)
-        return audio
+        return audio / peak
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         audio, valid_length, path = self.get_audio(index)

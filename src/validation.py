@@ -143,7 +143,6 @@ def validate_metrics(trainer) -> dict[str, float]:
                     sums[f"val_{name}"] = sums.get(f"val_{name}", 0.0) + float(value.detach().cpu())
                 if enabled and (needs_backend or wants_cosine):
                     fake = trainer.sample(tuple(audio.shape), cond=cond).clamp(-1.0, 1.0)
-                    fake_lengths = torch.full_like(audio_lengths, audio.shape[-1])
                     if needs_backend:
                         if trainer.metric_backend is None:
                             raise ValueError("FAD/MIND validation requires a metric embedding backend")
@@ -151,13 +150,13 @@ def validate_metrics(trainer) -> dict[str, float]:
                             trainer.metric_backend, batch, audio, sample_rate, audio_lengths, cache
                         )
                         fake_emb = trainer.metric_backend(
-                            fake, sample_rate=sample_rate, audio_lengths=fake_lengths
+                            fake, sample_rate=sample_rate, audio_lengths=audio_lengths
                         )
                         if real is not None and fake_emb is not None:
                             real_metric.append(real.detach())
                             fake_metric.append(fake_emb.detach())
                     if wants_cosine and trainer.conditioner is not None and cond is not None:
-                        fc = trainer.condition(fake, sample_rate, fake_lengths)
+                        fc = trainer.condition(fake, sample_rate, audio_lengths)
                         if fc is not None:
                             real_cond.append(cond.detach())
                             fake_cond.append(fc.detach())
@@ -178,17 +177,18 @@ def validate_metrics(trainer) -> dict[str, float]:
 
 
 @torch.no_grad()
-def generate_examples(trainer) -> torch.Tensor | None:
-    """Sample the trainer's fixed reproducible audio examples (EMA weights if available)."""
-    if trainer.example_shape is None:
+def generate_examples(trainer) -> list[torch.Tensor] | None:
+    """Sample each fixed example at its own native length (EMA weights if available)."""
+    if not trainer.example_audio:
         return None
     was_training = trainer.model.training
     trainer.model.eval()
     try:
         with ema_swapped(trainer.ema, trainer.model):
-            audio = trainer.sample(
-                trainer.example_shape, cond=trainer.example_cond, noise=trainer.example_noise
-            )
+            generated = [
+                trainer.sample(noise.shape, cond=cond, noise=noise.to(trainer.device))[0].detach().cpu()
+                for noise, cond in zip(trainer.example_noise, trainer.example_cond, strict=True)
+            ]
     finally:
         trainer.model.train(was_training)
-    return audio.detach().cpu()
+    return generated

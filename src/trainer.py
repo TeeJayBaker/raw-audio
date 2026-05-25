@@ -35,6 +35,8 @@ def build_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader | None]:
     data_cfg = _as_dict(cfg.data)
     pool_multiplier = int(data_cfg.pop("bucket_pool_multiplier", 100))
     augment_cfg = data_cfg.pop("augmentations", None)
+    for key in ("rms_lift", "rms_target", "lift_scale"):
+        data_cfg.pop(key, None)  # applied at the model boundary by the trainer, not the dataset
     dataset = AudioDirectoryDataset(**data_cfg)
     val_fraction = float(cfg.train.get("val_fraction", 0.0))
     if val_fraction > 0.0 and len(dataset) > 1:
@@ -97,6 +99,10 @@ class BaseTrainer:
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(cfg, self.run_dir / "config.yaml")
         self.sample_rate = int(cfg.data.sample_rate)
+        # WavFlow amplitude lift (a data property): forward in training_step, inverse passed to the sampler.
+        self.rms_lift = bool(cfg.data.get("rms_lift", False))
+        self.rms_target = float(cfg.data.get("rms_target", 0.33))
+        self.lift_scale = float(cfg.data.get("lift_scale", 3.0))
 
         self.logger = init_wandb(cfg, self.run_dir)
         self.train_loader, self.val_loader = build_dataloaders(cfg)
@@ -149,32 +155,24 @@ class BaseTrainer:
 
     @torch.no_grad()
     def _build_examples(self) -> None:
-        """Capture a fixed real batch + seeded noise for reproducible audio examples."""
-        self.example_audio = None
-        self.example_shape = None
-        self.example_cond = None
-        self.example_noise = None
+        """Capture fixed random real examples at their native lengths + seeded noise."""
+        self.example_audio: list[torch.Tensor] = []
+        self.example_cond: list[torch.Tensor | None] = []
+        self.example_noise: list[torch.Tensor] = []
         self._reference_logged = False
         count = int(wandb_cfg(self.cfg).get("audio_examples", 4))
         if count <= 0:
             return
-        loader = self.val_loader or self.train_loader
-        audios, lengths = [], []
-        for batch in loader:
-            audios.append(batch["audio"])
-            lengths.append(batch["audio_lengths"])
-            if sum(part.shape[0] for part in audios) >= count:
-                break
-        if not audios:
-            return
-        audio = torch.cat(audios, dim=0)[:count]
-        audio_lengths = torch.cat(lengths, dim=0)[:count]
-        cond = self.condition(audio.to(self.device), self.sample_rate, audio_lengths.to(self.device))
+        dataset = (self.val_loader or self.train_loader).dataset
         generator = torch.Generator().manual_seed(int(wandb_cfg(self.cfg).get("audio_seed", 0)))
-        self.example_audio = audio
-        self.example_shape = tuple(audio.shape)
-        self.example_cond = None if cond is None else cond.detach()
-        self.example_noise = torch.randn(audio.shape, generator=generator)
+        for index in torch.randperm(len(dataset), generator=generator)[:count].tolist():
+            item = dataset[index]
+            audio = item["audio"]  # [C, T] at native length, no batch padding
+            lengths = item["audio_lengths"].view(1).to(self.device)
+            cond = self.condition(audio.unsqueeze(0).to(self.device), self.sample_rate, lengths)
+            self.example_audio.append(audio)
+            self.example_cond.append(None if cond is None else cond.detach())
+            self.example_noise.append(torch.randn((1, *audio.shape), generator=generator))
 
     # ---- checkpointing --------------------------------------------------------
     def save_checkpoint(self) -> None:
@@ -332,6 +330,10 @@ class RFTrainer(BaseTrainer):
 
     def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
         loss_cfg = self.cfg.loss
+        if self.rms_lift:
+            # WavFlow (§3.2) amplitude lift of the target; inverse ÷lift_scale in RectifiedFlow.sample.
+            rms = audio.pow(2).mean(dim=(-2, -1), keepdim=True).sqrt().clamp_min(1e-8)
+            audio = self.lift_scale * ((self.rms_target / rms) * audio).clamp(-1.0, 1.0)
         x_t, t, x1 = self.method.train_tuple(audio, t=self._sample_t(audio))
         with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.amp_enabled):
             pred = self.model(x_t, t=t, cond=cond, length=audio.shape[-1])
@@ -359,7 +361,6 @@ class RFTrainer(BaseTrainer):
             steps=int(self.cfg.sampling.get("steps", 1)),
             method=str(self.cfg.sampling.get("method", "euler")),
             guidance_scale=float(self.cfg.sampling.get("guidance_scale", 1.0)),
+            lift_scale=self.lift_scale if self.rms_lift else 1.0,
         )
-        if bool(self.cfg.data.get("rms_lift", False)):
-            audio = audio / float(self.cfg.data.get("lift_scale", 3.0))
         return audio.clamp(-1.0, 1.0)
