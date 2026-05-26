@@ -21,7 +21,7 @@ data/*
 !data/.gitkeep
 runs/*
 !runs/.gitkeep
-wiki/
+wiki/pdfs
 
 # Experiment outputs
 outputs/

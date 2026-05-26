@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RMS lifting vs. one-shot crest factor</title>
+<style>
+  :root { --ink:#1a1a1a; --mut:#666; --line:#e2e2e2; --bad:#c0392b; --good:#1e8449; --accent:#2c3e50; }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         color: var(--ink); max-width: 760px; margin: 40px auto; padding: 0 22px; }
+  h1 { font-size: 1.5rem; margin: 0 0 .2em; }
+  h2 { font-size: 1.05rem; margin: 1.8em 0 .5em; color: var(--accent); border-bottom: 1px solid var(--line); padding-bottom: .25em; }
+  .sub { color: var(--mut); margin: 0 0 1.5em; font-size: .92rem; }
+  p { margin: .6em 0; }
+  table { border-collapse: collapse; width: 100%; margin: .8em 0; font-size: .92rem; }
+  th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { border-bottom: 2px solid #ccc; }
+  tr.bad td { color: var(--bad); }
+  tr.good td { font-weight: 600; }
+  tr.good td:first-child::after { content: " ✓"; color: var(--good); }
+  code { background:#f4f4f4; padding: 1px 5px; border-radius: 3px; font-size: .88em; }
+  figure { margin: 1em 0; }
+  figcaption { color: var(--mut); font-size: .85rem; margin-top: .4em; }
+  .key { background:#f7f9fb; border-left: 3px solid var(--accent); padding: .7em 1em; margin: 1.2em 0; }
+  .foot { color: var(--mut); font-size: .82rem; margin-top: 2.5em; border-top: 1px solid var(--line); padding-top: 1em; }
+  .legend span { display: inline-block; margin-right: 1.2em; font-size: .82rem; color: var(--mut); }
+  .swatch { display:inline-block; width:22px; height:0; vertical-align: middle; margin-right: 5px; }
+</style>
+</head>
+<body>
+
+<h1>RMS lifting clips one-shot transients</h1>
+<p class="sub">2026-05-26 · WavFlow amplitude lift on percussive/synth one-shots · n = 20,000 files
+(<code>samples_from_mars/one_shots</code>)</p>
+
+<p><strong>Question.</strong> WavFlow's amplitude lift
+<code>x_lift = s_a · clamp((r_*/rms)·x, −1, 1)</code> rescales the FM target toward the unit-Gaussian prior.
+The <code>clamp</code> hard-limits anything whose peak exceeds <code>1/r_*</code> &times; RMS — a
+<strong>crest-factor ceiling</strong> of <code>20·log10(1/r_*)</code> dB. WavFlow's default
+<code>r_*=0.33</code> sets that ceiling at <strong>9.6&nbsp;dB</strong>. Does that clip the attack
+transients of drum/synth one-shots?</p>
+
+<h2>Measured crest-factor distribution</h2>
+<p>Per-clip crest factor (peak / RMS, RMS computed exactly as the trainer does, over all channels &amp; time):
+median <strong>13.6&nbsp;dB</strong>, mean 13.8&nbsp;dB, p90 19.7&nbsp;dB, p99 26.0&nbsp;dB, max 41.6&nbsp;dB.
+The typical one-shot sits <strong>~4&nbsp;dB above the default ceiling</strong>.</p>
+
+<figure>
+<svg viewBox="0 0 660 300" width="100%" font-family="sans-serif" font-size="11" role="img"
+     aria-label="Histogram of crest factor in dB, most mass above the 9.6 dB default ceiling">
+  <!-- y gridlines + labels -->
+  <line x1="45" y1="270" x2="645" y2="270" stroke="#999"/>
+  <line x1="45" y1="84"  x2="645" y2="84"  stroke="#eee"/>
+  <line x1="45" y1="177" x2="645" y2="177" stroke="#eee"/>
+  <text x="40" y="273" text-anchor="end" fill="#999">0</text>
+  <text x="40" y="180" text-anchor="end" fill="#999">2000</text>
+  <text x="40" y="87"  text-anchor="end" fill="#999">4000</text>
+  <!-- bars -->
+  <g fill="#5b7fa6">
+    <rect x="53"  y="266.1" width="44" height="3.9"/>
+    <rect x="113" y="237.0" width="44" height="33.0"/>
+    <rect x="173" y="158.8" width="44" height="111.2"/>
+    <rect x="233" y="89.5"  width="44" height="180.5"/>
+    <rect x="293" y="30.0"  width="44" height="240.0"/>
+    <rect x="353" y="72.6"  width="44" height="197.4"/>
+    <rect x="413" y="165.2" width="44" height="104.8"/>
+    <rect x="473" y="231.8" width="44" height="38.2"/>
+    <rect x="533" y="252.3" width="44" height="17.7"/>
+    <rect x="593" y="267.4" width="44" height="2.6"/>
+  </g>
+  <!-- x labels -->
+  <g fill="#666" text-anchor="middle">
+    <text x="75"  y="285">0-3</text>
+    <text x="135" y="285">3-6</text>
+    <text x="195" y="285">6-9</text>
+    <text x="255" y="285">9-12</text>
+    <text x="315" y="285">12-15</text>
+    <text x="375" y="285">15-18</text>
+    <text x="435" y="285">18-21</text>
+    <text x="495" y="285">21-24</text>
+    <text x="555" y="285">24-30</text>
+    <text x="615" y="285">30+</text>
+  </g>
+  <!-- ceiling lines -->
+  <line x1="237" y1="22" x2="237" y2="270" stroke="#c0392b" stroke-width="2" stroke-dasharray="5,3"/>
+  <text x="241" y="32" fill="#c0392b" font-weight="bold">r&#42;=0.33 → 9.6 dB</text>
+  <line x1="445" y1="22" x2="445" y2="270" stroke="#1e8449" stroke-width="2" stroke-dasharray="5,3"/>
+  <text x="441" y="32" fill="#1e8449" font-weight="bold" text-anchor="end">r&#42;=0.1 → 20 dB</text>
+</svg>
+<figcaption>Crest-factor histogram (count vs. dB). Nearly all mass sits right of the red default
+ceiling (9.6&nbsp;dB) and left of the green chosen ceiling (20&nbsp;dB).</figcaption>
+</figure>
+
+<h2>What each <code>r_*</code> clips</h2>
+<p>The clamp hits the <em>highest-amplitude</em> samples — for a percussive hit, the attack
+transient that defines its identity. "Mean clipped" looks small precisely because the attack is a
+few samples, but those are the perceptually load-bearing ones. Lifted RMS stays ≈1.0 in every row
+(<code>s_a = 1/r_*</code>); only the headroom changes.</p>
+
+<table>
+  <thead>
+    <tr><th>r_*</th><th>s_a</th><th>ceiling</th><th>files clipped</th><th>mean clipped</th><th>median clipped</th></tr>
+  </thead>
+  <tbody>
+    <tr class="bad"><td>0.33 (WavFlow)</td><td>3.0</td><td>9.6 dB</td><td>80.6%</td><td>1.541%</td><td>1.603%</td></tr>
+    <tr><td>0.20</td><td>5.0</td><td>14.0 dB</td><td>47.4%</td><td>0.203%</td><td>0.000%</td></tr>
+    <tr class="good"><td>0.10</td><td>10.0</td><td>20.0 dB</td><td>9.1%</td><td>0.007%</td><td>0.000%</td></tr>
+  </tbody>
+</table>
+
+<div class="key">
+<strong>Decision.</strong> Set <code>rms_target = 0.1</code>, <code>lift_scale = 10.0</code> (20 dB ceiling ≈ dataset p90):
+median file untouched, only the punchiest ~9% clip their single loudest peak. Inheriting WavFlow's
+<code>0.33</code> would flat-top the attack on 80% of samples — actively harmful for this domain.
+The two lift knobs must be matched to <em>this</em> dataset's crest distribution, not WavFlow's
+low-crest 8&nbsp;s content; <code>r_* · s_a</code> = 1 preserves the prior match regardless.
+With clipping removed, the lift becomes cheap enough to A/B fairly against no-lift.</div>
+
+<p class="foot">
+Reproduce: <code>python scripts/crest_factor_check.py &lt;root&gt;</code>.
+Related fix: the lift's <code>clamp</code>/<code>s_a</code> ordering was corrected in <code>trainer.py</code>
+(<code>s_a · clamp(…)</code>, not <code>clamp(s_a · …)</code>) so the lifted target reaches unit RMS rather
+than being re-clipped to ±1. The hard <code>clamp</code> was then replaced with <code>tanh</code>
+so the residual top-percentile peaks compress smoothly instead of flat-topping (near-linear at
+<code>r_*=0.1</code>, so the body is still just unit-RMS-normalised).
+</p>
+
+</body>
+</html>

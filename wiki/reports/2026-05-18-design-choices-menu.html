@@ -1,0 +1,2022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Raw-Audio · Design Options Menu · 2026-05-18</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,300;6..72,400;6..72,500;6..72,600;6..72,700;6..72,800&family=Newsreader:ital,opsz,wght@1,6..72,400;1,6..72,500&display=swap');
+
+:root {
+  --bg: #0e0e10;
+  --bg-paper: #131316;
+  --surface: #1a1a1f;
+  --surface-2: #22232a;
+  --surface-3: #2a2b34;
+  --hairline: #2e2f37;
+  --hairline-strong: #3e3f49;
+  --ink: #e8e3d2;
+  --ink-dim: #9a948a;
+  --ink-faint: #6a6760;
+  --ink-bright: #f7f1de;
+  --accent: #d4a82d;
+  --accent-soft: #b58e1f;
+  --accent-glow: rgba(212, 168, 45, 0.12);
+  --good: #98c47e;
+  --good-glow: rgba(152, 196, 126, 0.1);
+  --warn: #d2a14f;
+  --warn-glow: rgba(210, 161, 79, 0.08);
+  --bad: #d4564f;
+  --bad-glow: rgba(212, 86, 79, 0.1);
+  --info: #8db4d8;
+  --info-glow: rgba(141, 180, 216, 0.08);
+  --special: #b88dd8;
+
+  --sans: "Newsreader", Georgia, "Times New Roman", serif;
+  --mono: "JetBrains Mono", "SF Mono", "Menlo", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.55;
+  font-feature-settings: "ss01", "onum", "kern";
+  letter-spacing: -0.005em;
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle paper-grain overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  opacity: 0.025;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='3' seed='8' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1, 0 0 0 0 1, 0 0 0 0 1, 0 0 0 0.5 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* ─── LAYOUT ────────────────────────────────────────────── */
+.layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 100vh;
+}
+
+/* ─── LEFT RAIL (sticky nav) ────────────────────────────── */
+.rail {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  background: var(--bg-paper);
+  border-right: 1px solid var(--hairline);
+  padding: 2em 1.5em 2em 2em;
+  overflow-y: auto;
+  font-family: var(--mono);
+}
+.rail-header { margin-bottom: 2em; padding-bottom: 1.2em; border-bottom: 1px solid var(--hairline); }
+.rail-eyebrow { font-size: 0.7rem; color: var(--ink-faint); letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 0.6em; }
+.rail-title { font-size: 1.05rem; color: var(--accent); font-weight: 600; line-height: 1.2; letter-spacing: 0.02em; }
+.rail-date { font-size: 0.72rem; color: var(--ink-faint); margin-top: 0.5em; letter-spacing: 0.1em; }
+
+.rail-nav { display: flex; flex-direction: column; gap: 1.4em; }
+.rail-section { display: flex; flex-direction: column; gap: 0.15em; }
+.rail-section-label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55em;
+  font-size: 0.78rem;
+  color: var(--ink);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.45em;
+  padding-bottom: 0.4em;
+  border-bottom: 1px dashed var(--hairline);
+}
+.rail-num {
+  display: inline-block;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+.rail-num-star { color: var(--accent); font-size: 1.1rem; }
+.rail-link {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+  font-size: 0.72rem;
+  color: var(--ink-dim);
+  text-decoration: none;
+  padding: 0.32em 0.5em 0.32em 1.1em;
+  border-left: 1px solid var(--hairline);
+  transition: all 0.15s ease;
+  position: relative;
+}
+.rail-link::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 60%;
+  background: var(--accent);
+  transition: width 0.15s ease;
+}
+.rail-link:hover { color: var(--ink-bright); border-left-color: transparent; }
+.rail-link:hover::before { width: 2px; }
+.rail-link:target { color: var(--accent); }
+
+.rail-key { font-family: var(--mono); color: var(--ink-faint); font-size: 0.68rem; }
+.rail-bad {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--bad);
+  padding: 0.05em 0.4em;
+  border: 1px solid var(--bad);
+  border-radius: 2px;
+  margin-left: 0.4em;
+  font-weight: 500;
+}
+.rail-good {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--good);
+  padding: 0.05em 0.4em;
+  border: 1px solid var(--good);
+  border-radius: 2px;
+  margin-left: 0.4em;
+  font-weight: 500;
+}
+
+/* ─── MAIN CONTENT ─────────────────────────────────────── */
+.content {
+  padding: 3em 3.5em 5em;
+  min-width: 0;
+}
+
+/* ─── DOC HEADER ───────────────────────────────────────── */
+.doc-header { margin-bottom: 4em; padding-bottom: 2.5em; border-bottom: 1px solid var(--hairline); position: relative; }
+.doc-header::before {
+  content: 'I';
+  position: absolute;
+  top: -0.25em;
+  right: 0;
+  font-family: var(--mono);
+  font-size: 9rem;
+  font-weight: 700;
+  color: var(--surface);
+  line-height: 1;
+  z-index: 0;
+  letter-spacing: -0.08em;
+}
+.doc-eyebrow { font-family: var(--mono); font-size: 0.72rem; color: var(--accent); letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 1em; }
+.doc-header h1 {
+  font-family: var(--sans);
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  font-weight: 500;
+  color: var(--ink-bright);
+  margin: 0 0 0.6em 0;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  max-width: 950px;
+  position: relative;
+  z-index: 1;
+}
+.doc-header h1 em { font-style: italic; color: var(--accent); font-weight: 500; }
+.doc-lede {
+  font-size: 1.05rem;
+  color: var(--ink-dim);
+  max-width: 780px;
+  line-height: 1.55;
+  margin: 0;
+  position: relative;
+  z-index: 1;
+  font-weight: 400;
+}
+.doc-lede strong { color: var(--ink); font-weight: 600; }
+.doc-meta {
+  display: flex;
+  gap: 2em;
+  margin-top: 1.8em;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.doc-meta span { display: flex; align-items: center; gap: 0.5em; }
+.doc-meta span::before { content: '·'; color: var(--accent); font-size: 1.4em; line-height: 0; }
+.doc-meta span:first-child::before { display: none; }
+
+/* ─── SECTION ──────────────────────────────────────────── */
+.section { margin: 4em 0 5em; scroll-margin-top: 1.5em; position: relative; }
+.section-header-wrapper {
+  position: relative;
+  margin-bottom: 2.5em;
+  padding-bottom: 1.4em;
+  border-bottom: 1px solid var(--hairline);
+}
+.section-header {
+  font-family: var(--sans);
+  font-size: clamp(1.6rem, 2.4vw, 2.1rem);
+  font-weight: 500;
+  color: var(--ink-bright);
+  margin: 0 0 0.5em 0;
+  letter-spacing: -0.022em;
+  line-height: 1.05;
+  padding-left: 2.3em;
+  min-height: 1.6em;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+}
+.section-num {
+  position: absolute;
+  left: 0;
+  bottom: -0.18em;
+  font-family: var(--mono);
+  font-size: 3.6rem;
+  font-weight: 700;
+  color: transparent;
+  line-height: 0.85;
+  letter-spacing: -0.06em;
+  -webkit-text-stroke: 1.2px var(--ink-faint);
+  display: inline-block;
+  transition: -webkit-text-stroke-color 0.3s ease;
+}
+.section:hover .section-num { -webkit-text-stroke-color: var(--accent); }
+.section-intro {
+  color: var(--ink-dim);
+  font-size: 0.96rem;
+  max-width: 950px;
+  margin: 0;
+  font-weight: 400;
+  padding-left: 2.3em;
+}
+.section-intro em, .section-intro strong { color: var(--ink); }
+
+/* ─── PANELS · horizontal scroll carousel ──────────────── */
+.panels {
+  display: flex;
+  flex-direction: row;
+  gap: 1.5em;
+  overflow-x: auto;
+  overflow-y: visible;
+  padding: 0.25em 0 1.4em 0;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline-strong) transparent;
+  align-items: flex-start;
+  /* fade hint that more content exists right */
+  -webkit-mask-image: linear-gradient(to right, black 0, black calc(100% - 32px), transparent 100%);
+  mask-image: linear-gradient(to right, black 0, black calc(100% - 32px), transparent 100%);
+}
+.panels::-webkit-scrollbar { height: 9px; }
+.panels::-webkit-scrollbar-track { background: transparent; margin: 0 8px; }
+.panels::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+.panels::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); background-clip: padding-box; border: 2px solid transparent; }
+
+.panel {
+  flex: 0 0 min(640px, 88vw);
+  scroll-snap-align: start;
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 1.5em 1.6em 1.4em;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1em 1.1em;
+  grid-auto-flow: row dense;
+  position: relative;
+  transition: border-color 0.2s ease;
+}
+.panel:hover { border-color: var(--hairline-strong); }
+.panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 1.6em;
+  right: 1.6em;
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--accent), transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.panel:hover::before { opacity: 0.5; }
+
+.panel-header { grid-column: 1 / -1; border-bottom: 1px solid var(--hairline); padding-bottom: 0.85em; }
+.panel-title, .panel-header h3, .panel h3 {
+  font-family: var(--sans);
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--ink-bright);
+  margin: 0 0 0.3em 0;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+}
+.panel-tagline {
+  font-family: var(--sans);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--ink-dim);
+  font-size: 0.92rem;
+  margin: 0;
+  line-height: 1.45;
+}
+.panel-sub { font-family: var(--mono); color: var(--ink-faint); font-weight: 400; font-size: 0.72rem; letter-spacing: 0.04em; }
+
+.panel-tags, .subpanel-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em;
+  margin-top: 0.7em;
+  grid-column: 1 / -1;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3em 0.7em;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-family: var(--mono);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  background: transparent;
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink-dim);
+  line-height: 1.4;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+  max-width: 100%;
+  hyphens: none;
+}
+.tag strong { color: var(--good); font-weight: 700; }
+
+/* Quality */
+.tag.q-low    { color: var(--ink-faint); }
+.tag.q-mid    { color: var(--warn);  border-color: rgba(210, 161, 79, 0.35); }
+.tag.q-high   { color: var(--good);  border-color: rgba(152, 196, 126, 0.35); }
+.tag.q-top    { color: var(--good);  border-color: var(--good); background: var(--good-glow); font-weight: 600; }
+
+/* NFE behaviour — RECOLORED per user framing:
+   m-saturates = IDEAL (1-NFE great, 2-3 small bump, flat past) → GREEN
+   m-monotonic = BAD (needs many NFE) → RED
+   m-graceful  = NEUTRAL/AMBER (multi-step regime; 1-NFE depends on stage 2)
+   m-fixed     = AMBER (separate model per N or specific use)
+*/
+.tag.m-saturates { color: var(--good); border-color: var(--good); background: var(--good-glow); font-weight: 600; }
+.tag.m-monotonic { color: var(--bad);  border-color: var(--bad);  background: var(--bad-glow);  font-weight: 600; }
+.tag.m-graceful  { color: var(--warn); border-color: rgba(210, 161, 79, 0.35); }
+.tag.m-fixed     { color: var(--warn); border-color: rgba(210, 161, 79, 0.35); }
+.tag.m-degrades  { color: var(--bad);  border-color: rgba(212, 86, 79, 0.35); }
+
+/* Speed / training cost */
+.tag.s-fast { color: var(--good); border-color: var(--good); background: var(--good-glow); font-weight: 600; }
+.tag.s-mid  { color: var(--warn); border-color: rgba(210, 161, 79, 0.35); }
+.tag.s-slow { color: var(--bad);  border-color: rgba(212, 86, 79, 0.35); }
+
+/* Invertibility */
+.tag.inv-preserved { color: var(--good); border-color: var(--good); background: var(--good-glow); font-weight: 600; }
+.tag.inv-partial   { color: var(--warn); border-color: rgba(210, 161, 79, 0.35); }
+.tag.inv-destroyed { color: var(--bad);  border-color: rgba(212, 86, 79, 0.35); }
+.tag.inv-untested  { color: var(--ink-faint); }
+
+/* Sequence (section 4) */
+.tag.seq-samplerate { color: var(--bad);  border-color: rgba(212, 86, 79, 0.35); }
+.tag.seq-hoprate    { color: var(--good); border-color: rgba(152, 196, 126, 0.35); }
+.tag.seq-patched    { color: var(--info); border-color: rgba(141, 180, 216, 0.4); }
+
+.panel-summary {
+  font-family: var(--sans);
+  font-size: 0.95rem;
+  color: var(--ink);
+  margin: 0;
+  line-height: 1.6;
+  grid-column: 1 / -1;
+}
+.panel-summary code, .panel code, .subpanel code, .panel-summary code {
+  font-family: var(--mono);
+  background: var(--surface-2);
+  padding: 0.08em 0.4em;
+  border-radius: 2px;
+  font-size: 0.82em;
+  color: var(--accent);
+  border: 1px solid var(--hairline);
+  letter-spacing: 0;
+}
+.panel-summary strong { color: var(--ink-bright); font-weight: 700; }
+
+/* Strengths and Weaknesses — SIDE-BY-SIDE, content height (no stretch) */
+.strengths, .weaknesses {
+  font-size: 0.88rem;
+  padding: 0.85em 1em;
+  border-radius: 4px;
+  line-height: 1.5;
+  align-self: start;
+}
+.strengths { background: var(--good-glow); border-left: 2px solid var(--good); }
+.weaknesses { background: var(--bad-glow);  border-left: 2px solid var(--bad);  }
+.strengths h4, .weaknesses h4 {
+  font-family: var(--mono);
+  margin: 0 0 0.6em 0;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+}
+.strengths h4 { color: var(--good); }
+.weaknesses h4 { color: var(--bad); }
+.strengths h4::before, .weaknesses h4::before {
+  display: inline-block;
+  margin-right: 0.4em;
+  font-weight: 700;
+}
+.strengths h4::before { content: '+ '; }
+.weaknesses h4::before { content: '− '; }
+.strengths ul, .weaknesses ul { margin: 0; padding-left: 1.1em; }
+.strengths li, .weaknesses li { margin: 0 0 0.35em 0; line-height: 1.45; }
+.strengths li::marker { color: var(--good); }
+.weaknesses li::marker { color: var(--bad); }
+
+/* Audio notes */
+.audio-notes {
+  grid-column: 1 / -1;
+  background: var(--info-glow);
+  border-left: 2px solid var(--info);
+  padding: 0.85em 1.1em;
+  border-radius: 0 4px 4px 0;
+  font-size: 0.9rem;
+}
+.audio-notes h4 {
+  font-family: var(--mono);
+  margin: 0 0 0.45em 0;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+  color: var(--info);
+}
+.audio-notes h4::before { content: '♪ '; }
+.audio-notes p { margin: 0; line-height: 1.55; }
+
+/* Refs */
+.refs {
+  grid-column: 1 / -1;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 0.85em 1.1em;
+  border: 1px solid var(--hairline);
+  font-size: 0.85rem;
+}
+.refs h4 {
+  font-family: var(--mono);
+  margin: 0 0 0.5em 0;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+  color: var(--ink-faint);
+}
+.refs h4::before { content: '⌗ '; }
+.refs ul { margin: 0; padding-left: 1.2em; }
+.refs li { margin-bottom: 0.3em; line-height: 1.45; }
+.refs li::marker { color: var(--ink-faint); font-family: var(--mono); }
+
+/* CPU estimate */
+.cpu-estimate {
+  grid-column: 1 / -1;
+  background: var(--accent-glow);
+  border-left: 2px solid var(--accent);
+  padding: 0.75em 1.1em;
+  border-radius: 0 4px 4px 0;
+  font-size: 0.87rem;
+  font-family: var(--mono);
+  line-height: 1.55;
+}
+.cpu-estimate strong { color: var(--accent); font-weight: 700; }
+
+/* Subpanels */
+.subpanel {
+  grid-column: 1 / -1;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  padding: 1em 1.2em;
+  margin: 0.25em 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55em 0.85em;
+  grid-auto-flow: row dense;
+}
+.subpanel > * { grid-column: 1 / -1; }
+.subpanel > .row.strengths { grid-column: 1; }
+.subpanel > .row.weaknesses { grid-column: 2; }
+.subpanel-title, .subpanel h4 {
+  font-family: var(--sans);
+  color: var(--accent);
+  margin: 0 0 0.4em 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.subpanel-header { grid-column: 1 / -1; }
+.subpanel-header h4 { margin: 0; }
+.subpanel-tags { margin-top: 0.4em; margin-bottom: 0.4em; }
+.subpanel p { margin: 0 0 0.4em 0; font-size: 0.9rem; line-height: 1.55; }
+.subpanel ol, .subpanel ul { font-size: 0.88rem; margin: 0.4em 0; padding-left: 1.4em; }
+.subpanel li { margin-bottom: 0.3em; }
+
+/* Section 4 used compact .row pattern instead of full blocks */
+.row {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.55em 0.85em;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  border-radius: 3px;
+}
+.row strong { font-family: var(--mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; margin-right: 0.4em; }
+.row.strengths   { background: var(--good-glow); border-left: 2px solid var(--good); padding-left: 0.85em; grid-column: 1; align-self: start; }
+.row.weaknesses  { background: var(--bad-glow);  border-left: 2px solid var(--bad);  padding-left: 0.85em; grid-column: 2; align-self: start; }
+.row.audio-notes { background: var(--info-glow); border-left: 2px solid var(--info); padding-left: 0.85em; }
+.row.cpu-estimate{ background: var(--accent-glow); border-left: 2px solid var(--accent); padding-left: 0.85em; font-family: var(--mono); font-size: 0.83rem; }
+.row.strengths   strong { color: var(--good); }
+.row.weaknesses  strong { color: var(--bad); }
+.row.audio-notes strong { color: var(--info); }
+.row.cpu-estimate strong { color: var(--accent); }
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; transition: border-color 0.15s ease, color 0.15s ease; }
+a:hover { color: var(--accent-soft); border-bottom-color: var(--accent-soft); }
+
+/* ─── RECOMMENDATIONS ──────────────────────────────────── */
+.recommendations { margin: 5em 0 0; padding-top: 2.5em; border-top: 2px solid var(--accent); position: relative; }
+.recommendations::before {
+  content: '★';
+  position: absolute;
+  top: -0.85em;
+  left: 0;
+  background: var(--bg);
+  padding: 0 0.5em 0 0;
+  color: var(--accent);
+  font-size: 1.2rem;
+}
+.stack-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 1.5em;
+  margin-top: 2em;
+}
+.stack-card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-top: 3px solid var(--accent);
+  border-radius: 0 0 6px 6px;
+  padding: 1.4em 1.5em 1.5em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7em;
+}
+.stack-card h3 {
+  font-family: var(--sans);
+  color: var(--ink-bright);
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5em;
+}
+.stack-stars { color: var(--good); font-size: 0.85em; letter-spacing: 0.15em; flex-shrink: 0; }
+.stack-tagline {
+  font-style: italic;
+  color: var(--ink-dim);
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+.stack-recipe {
+  background: var(--bg-paper);
+  padding: 0.85em 1em;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  border: 1px solid var(--hairline);
+  font-family: var(--mono);
+}
+.stack-recipe-line { margin: 0.25em 0; display: grid; grid-template-columns: 80px 1fr; gap: 0.7em; align-items: baseline; line-height: 1.5; }
+.stack-recipe-key { color: var(--ink-faint); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; }
+.stack-recipe-val { color: var(--ink); font-family: var(--sans); font-size: 0.92rem; }
+.stack-notes { font-size: 0.87rem; margin: 0; }
+.stack-notes p { margin: 0.3em 0; line-height: 1.55; }
+.stack-risk {
+  background: var(--bad-glow);
+  border-left: 2px solid var(--bad);
+  padding: 0.65em 0.9em;
+  border-radius: 0 4px 4px 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.stack-risk strong { color: var(--bad); font-family: var(--mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; margin-right: 0.4em; }
+
+/* Footer */
+.doc-footer {
+  margin-top: 5em;
+  padding-top: 2em;
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+  font-family: var(--mono);
+}
+.doc-footer p { margin: 0.4em 0; line-height: 1.55; }
+.doc-footer a { color: var(--accent-soft); }
+
+/* ─── RESPONSIVE ──────────────────────────────────────── */
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .rail { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--hairline); padding: 1.5em; }
+  .rail-nav { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1em; }
+  .content { padding: 2em 1.5em 3em; }
+  .panel { grid-template-columns: 1fr; }
+  .section-num { font-size: 4rem; }
+}
+@media (max-width: 600px) {
+  .panel { padding: 1.2em 1.2em 1em; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<aside class="rail">
+  <div class="rail-header">
+    <div class="rail-eyebrow">RAW-AUDIO</div>
+    <div class="rail-title">Design Options Menu</div>
+    <div class="rail-date">2026·05·18</div>
+  </div>
+  <nav class="rail-nav">
+
+    <div class="rail-section">
+      <div class="rail-section-label"><span class="rail-num">01</span> Pretrain</div>
+      <a class="rail-link" href="#section-1"><span class="rail-key">A</span> FM / RF + audio fixes</a>
+      <a class="rail-link" href="#section-1"><span class="rail-key">B</span> Reflow / 2-RF</a>
+      <a class="rail-link" href="#section-1"><span class="rail-key">C</span> MF as pretrain</a>
+    </div>
+
+    <div class="rail-section">
+      <div class="rail-section-label"><span class="rail-num">02</span> Post-train</div>
+      <a class="rail-link" href="#section-2"><span class="rail-key">A</span> Adversarial finetune</a>
+      <a class="rail-link" href="#section-2"><span class="rail-key">B</span> FD-loss polish</a>
+      <a class="rail-link" href="#section-2"><span class="rail-key">C</span> Consistency distill</a>
+    </div>
+
+    <div class="rail-section">
+      <div class="rail-section-label"><span class="rail-num">03</span> 1-stage</div>
+      <a class="rail-link" href="#section-3"><span class="rail-key">A</span> MeanFlow family</a>
+      <a class="rail-link" href="#section-3"><span class="rail-key">B</span> Pure 1-step GAN</a>
+      <a class="rail-link" href="#section-3"><span class="rail-key">C</span> Drifting + φ</a>
+    </div>
+
+    <div class="rail-section">
+      <div class="rail-section-label"><span class="rail-num">04</span> Backbone</div>
+      <a class="rail-link" href="#section-4"><span class="rail-key">A</span> Conv on waveform</a>
+      <a class="rail-link" href="#section-4"><span class="rail-key">B</span> Conv on STFT</a>
+      <a class="rail-link" href="#section-4"><span class="rail-key">C</span> Transformer / patched</a>
+    </div>
+
+    <div class="rail-section">
+      <div class="rail-section-label"><span class="rail-num rail-num-star">★</span> Stacks</div>
+      <a class="rail-link" href="#recommendations"><span class="rail-key">1</span> Safest &gt;RT path <span class="rail-good">proven</span></a>
+      <a class="rail-link" href="#recommendations"><span class="rail-key">2</span> Quality ceiling</a>
+      <a class="rail-link" href="#recommendations"><span class="rail-key">3</span> Tiny percussive</a>
+      <a class="rail-link" href="#recommendations"><span class="rail-key">4</span> Inversion-preserve</a>
+      <a class="rail-link" href="#recommendations"><span class="rail-key">5</span> Drifting + φ</a>
+    </div>
+
+  </nav>
+</aside>
+
+<main class="content">
+
+<header class="doc-header">
+  <div class="doc-eyebrow">Research · Design · Menu</div>
+  <h1>Choosing a recipe for <em>1-NFE raw-audio generation</em> on a CPU budget</h1>
+  <p class="doc-lede">
+    Four disentangled axes, fully mix-and-match. Sections <strong>01 + 02</strong> form the two-stage path (multi-step pretrain → finetune to 1-NFE); <strong>03</strong> is the alternative one-stage route; <strong>04</strong> is the orthogonal backbone choice — the dominant CPU cost lever. Every panel is tagged with four signals: 1-NFE quality, 2&ndash;3 NFE behaviour, training/inference cost, and RF invertibility. Read the rail; read panels in any order.
+  </p>
+  <div class="doc-meta">
+    <span>FOUR AXES</span>
+    <span>FIVE RECOMMENDED STACKS</span>
+    <span>CPU MUCH-FASTER-THAN-REAL-TIME</span>
+    <span>0.1–10 s SAMPLES</span>
+  </div>
+</header>
+<section class="section" id="section-1">
+  <header class="section-header-wrapper">
+    <h2 class="section-header"><span class="section-num">01</span> Pretrain Methodology</h2>
+    <p class="section-intro">
+      Methods on this page produce a <em>multi-step base model</em> (or a 1-step base usable as a teacher) and assume a section-2 finetune to reach deployable 1-NFE quality. They share the same forward process (Gaussian-to-data interpolant), train stably from random init, and trade NFE for quality at inference time &mdash; none of them is a strict 1-NFE deployment target on their own. The choice in this section is mostly a teacher-design decision: which trajectory geometry, which output parameterisation, and which conditioning surface to hand off to the section-2 polish (CM, GAN, FD-loss, or score distillation). CLAP / MATPAC semantic conditioning is assumed to wrap all four options identically as a learned cross-attention input.
+    </p>
+  </header>
+
+  <div class="panels">
+
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">A. Flow Matching / Rectified Flow with audio-specific fixes</h3>
+        <p class="panel-tagline">The canonical multi-step base. Boring, stable, FlashAttn-compatible &mdash; and the wiki has two independent audio-specific design rules nailed down.</p>
+      </header>
+
+      <div class="panel-tags">
+        <span class="tag q-mid">1-NFE: &#9733;&#9733; (needs section-2 to deploy)</span>
+        <span class="tag m-graceful">2&ndash;3 NFE: multi-step pretrain &mdash; 1-NFE not deployable without &sect;2 finetune</span>
+        <span class="tag s-slow">CPU speed: slow at training NFE; depends on backbone</span>
+        <span class="tag inv-preserved">RF inversion: preserved (ODE)</span>
+      </div>
+
+      <p class="panel-summary">
+        Train a velocity (or <code>x&#8321;</code>-prediction) network on the linear Gaussian-to-data interpolant; sample by Euler-integrating the learned ODE at 10&ndash;50 NFE. The audio-specific reparameterization moves and loss shaping are now well-characterised: WaveFM and Flow2GAN <em>independently rederive <code>x&#8321;</code>-prediction</em>, Flow2GAN adds spectral-energy-inverse loss weighting, and WaveFM adds a mel-conditioned diagonal-Gaussian prior. The result is a multi-step base whose 1-NFE forward already produces audible audio &mdash; ideal as a teacher for CM distillation (WaveFM&rsquo;s recipe) or GAN finetune (Flow2GAN / PeriodWave-Turbo). This is the default safe pretrain when nothing more exotic is required.
+      </p>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>Trains stably from random init.</strong> No JVP, no curriculum, no teacher. Standard MSE regression on velocity or <code>x&#8321;</code> &mdash; the most boring, most reproducible training loop in the wiki.</li>
+          <li><strong>FlashAttention / FSDP compatible</strong> by default, since there is no derivative-of-network term in the loss.</li>
+          <li><strong>RF inversion is preserved.</strong> The PF-ODE is the trained object, so any downstream task that needs latent inversion (editing, interpolation, controllable generation) works without modification.</li>
+          <li><strong>Two independent audio-specific fixes converge on the same answer.</strong> Both Flow2GAN and WaveFM rederive <code>x&#8321;</code>-prediction from different angles (silent-region noise cancellation vs. stochastic-derivative instability). Two-paper agreement makes this the strongest single audio-FM design rule in the wiki.</li>
+          <li><strong>Spectral-energy-inverse loss weighting (Flow2GAN)</strong> upweights quiet (frame, freq) cells; PESQ jump 2.81 &rarr; 3.47 on the same backbone.</li>
+          <li><strong>Mel-conditioned (or RMS-conditioned) diagonal-Gaussian prior (WaveFM)</strong> &mdash; the single largest ablation drop in WaveFM (SMOS 4.11 &rarr; 3.79 without it). Reparameterized FM only <em>samples</em> the prior, so the clamp can be ~100&times; tighter than PriorGrad needed.</li>
+          <li><strong>Direct teacher for both stage-2 routes in the wiki.</strong> WaveFM uses it &rarr; CM (sub-real-time CPU, training stability); Flow2GAN / PeriodWave-Turbo use it &rarr; MPD/MRD GAN (4.85&times; RT CPU on STFT-domain ConvNeXt).</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>Not deployable as-is at 1-NFE.</strong> Multi-step is the design point; a section-2 finetune is mandatory for the project&rsquo;s CPU target.</li>
+          <li><strong>Phase handling is unresolved.</strong> WaveFM keeps a waveform-output network with an explicit <code>atan2</code>-wrapped phase-angle loss; Flow2GAN runs on complex STFT directly. Both work; at matched backbone the better choice is the open question.</li>
+          <li><strong>The mel-conditioned prior is conditional-only as published.</strong> An unconditional analogue (constant data-side &Sigma;, or RMS-conditioned &Sigma;) is untested.</li>
+          <li><strong>No CPU number for raw-waveform unconditional FM.</strong> The published audio CPU numbers (Flow2GAN 4.85&times; RT, WaveFM 0.64&times; RT) are vocoder benchmarks &mdash; conditional and at sample- or hop-rate.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          The two audio-specific fixes are dimension-agnostic and port directly to unconditional raw waveform. CLAP / MATPAC semantic conditioning attaches naturally as a cross-attention input at the bottleneck of the backbone (consistent with how mel conditioning is already wired in WaveFM / Flow2GAN). The pretrain runs at training NFE (typically 50&ndash;1000) and is dominated by per-step backbone cost &mdash; STFT-domain ConvNeXt-at-hop-rate is the right CPU shape for the downstream 1-NFE student to inherit; sample-rate 1D U-Nets like HiFi-GAN&rsquo;s lineage are slower per step on CPU. The pretrain itself is not the deployment artefact; what matters is that the teacher carries enough phase / harmonic structure for section-2 distillation to land 1-NFE quality.
+        </p>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li><a href="../papers/2503.16689.md">WaveFM (2503.16689)</a> &mdash; reparameterized FM + mel-cond prior + multi-res STFT-with-phase loss; the canonical FM-pretrain-for-audio recipe.</li>
+          <li><a href="../papers/2512.23278.md">Flow2GAN (2512.23278)</a> &mdash; <code>x&#8321;</code>-prediction + spectral-energy-inverse weighting; STFT-domain ConvNeXt at hop rate.</li>
+          <li><a href="../papers/2408.08019.md">PeriodWave-Turbo (2408.08019)</a> &mdash; FM pretrain + GAN finetune lineage; the second adversarial-stage-2 datapoint.</li>
+          <li><a href="../papers/2403.05010.md">RFWave (2403.05010)</a> &mdash; complex-STFT RF baseline; 10-NFE RF beats 50-NFE DDPM at PESQ 4.21 vs 2.79.</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>CPU estimate:</strong> at training NFE this is "slow" by definition &mdash; cost scales linearly in NFE &times; per-step backbone cost. Audio CPU benchmark grid: Flow2GAN reports ~0.2 s audio / CPU-second / step at 78.9 M / 24 kHz / batch 16, so 10-NFE pretrain inference is ~0.5&times; RT and 50-NFE ~0.1&times; RT &mdash; well below the project&rsquo;s much-faster-than-real-time bar. The section-2 finetune is what brings this down to 1-NFE. See <a href="../wiki/concepts/inference.md">inference.md</a>.
+      </div>
+    </article>
+
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">B. Reflow / 2-Rectified Flow</h3>
+        <p class="panel-tagline">Straighten the trajectories of an RF teacher by retraining on its own paired (z, x) couplings. The cleanest theoretical answer to "1-step + invertibility".</p>
+      </header>
+
+      <div class="panel-tags">
+        <span class="tag q-mid">1-NFE: &#9733;&#9733; (theory says near-1-step quality on straightened model)</span>
+        <span class="tag m-saturates">2&ndash;3 NFE: 1-NFE near-exact on 2-RF; optional small refinement, ODE preserved</span>
+        <span class="tag s-slow">CPU speed: same per-step as the RF base; NFE dependent</span>
+        <span class="tag inv-preserved">RF inversion: preserved (still an ODE)</span>
+      </div>
+
+      <p class="panel-summary">
+        Train a Rectified Flow teacher to convergence; sample pairs <code>(z, x)</code> by integrating its ODE end-to-end on a large noise batch; train a <em>new</em> Rectified Flow on those straight couplings instead of the independent (noise, data) coupling. The straightening property of RF is that the optimal velocity field on a deterministic coupling has straighter trajectories than on the original product coupling &mdash; iterating this (1-RF &rarr; 2-RF) drives the trajectories toward piecewise-linear, recovering near-1-step generation while the model remains a genuine PF-ODE. The theoretical appeal for this project is the unique combination: 1-step deployment without distillation collapse <em>and</em> preserved invertibility.
+      </p>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>The only family member that preserves full PF-ODE invertibility while pushing toward 1-NFE.</strong> Distillation routes (CM, GAN, FD-loss) destroy the ODE; reflow doesn&rsquo;t.</li>
+          <li><strong>Training is just RF training, twice.</strong> No JVP, no consistency identity, no adversarial balance &mdash; identical stability story to Panel A.</li>
+          <li><strong>FlashAttention compatible</strong> (it&rsquo;s still FM under the hood).</li>
+          <li><strong>Composes cleanly with the audio-specific FM fixes from Panel A.</strong> <code>x&#8321;</code>-prediction, spectral-energy-inverse weighting, mel/RMS-conditioned prior all transfer to the 2-RF stage unchanged in principle.</li>
+          <li><strong>Multi-NFE is graceful</strong> &mdash; 2-RF is still an ODE, so running at 2&ndash;3 NFE for tiny refinement is well-defined (unlike CM/GAN students whose multi-NFE behaviour is undefined or degrades).</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>Speculative for audio &mdash; untested anywhere in the wiki.</strong> Every datapoint is image-side. The wiki does not currently have <code>papers/2209.03003.md</code> ingested (in progress); the panel is written from the brief, not from a per-paper synthesis.</li>
+          <li><strong>Coupling-generation cost is non-trivial.</strong> Producing the (z, x) dataset requires running the 1-RF ODE end-to-end on a large noise batch &mdash; effectively doubling the pretrain budget and storage.</li>
+          <li><strong>Quality ceiling at 1-NFE is determined by the teacher&rsquo;s sampling fidelity</strong> at the chosen reflow NFE, not by stage-2 polish &mdash; you can&rsquo;t fix a bad teacher with reflow alone.</li>
+          <li><strong>No published audio results.</strong> Image-side numbers do not transfer free of charge: audio&rsquo;s broad spectrum and silence-heavy distributions stress the straightening assumption in ways images don&rsquo;t.</li>
+          <li><strong>1-NFE on 2-RF alone is image-side around CIFAR / CelebA quality.</strong> Likely still needs a section-2 finetune (CM or GAN) to match iMF&rsquo;s 1.72-class headline on the relevant benchmark; the headline win is the <em>invertibility</em>, not the raw 1-NFE FID.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          Speculative on every axis. The straightening argument is geometry-of-couplings &mdash; in principle dimension-agnostic &mdash; but audio&rsquo;s distribution has heavy-tailed amplitude support and large silent regions where the velocity is near-degenerate; the empirical effect on reflow stability is unknown. CLAP / MATPAC conditioning would attach to the RF teacher as in Panel A; both reflow rounds inherit the same conditioning surface. The combination "FM-with-audio-fixes &rarr; reflow &rarr; CM finetune" is the maximally-conservative 1-NFE+invertibility stack the wiki suggests; nothing in the wiki tests it. If invertibility is not a project requirement, Panel A &rarr; section-2 is strictly cheaper.
+        </p>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li>Liu et al. 2022, <em>Flow Straight and Fast: Learning to Generate and Transfer Data with Rectified Flow</em> (arXiv 2209.03003) &mdash; the original 2-Rectified-Flow paper. <strong>Wiki ingest in progress; <code>papers/2209.03003.md</code> not yet present.</strong></li>
+          <li><a href="../papers/2403.05010.md">RFWave (2403.05010)</a> &mdash; the audio RF baseline reflow would be applied to.</li>
+          <li><a href="../papers/2503.16689.md">WaveFM (2503.16689)</a> &mdash; the natural FM-with-audio-fixes teacher for an audio reflow attempt.</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>CPU estimate:</strong> deployment cost is identical to running the 2-RF model at the chosen NFE &mdash; same backbone, same per-step cost as Panel A. If 2-RF reaches usable 1-NFE on its own, this lands in the same CPU regime as Panel C&rsquo;s MeanFlow base (1-NFE backbone cost only). The training cost is roughly 2&times; Panel A (one extra full RF training run on the coupled dataset, plus coupling generation).
+      </div>
+    </article>
+
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">C. MeanFlow family as pretrain (iMF / pMF)</h3>
+        <p class="panel-tagline">A 1-step base that&rsquo;s already strong &mdash; then polished further in section 2 with FD-loss. The "iMF + FD-loss" stack is the canonical image-side recipe that hits 0.72 FID @ 1-NFE.</p>
+      </header>
+
+      <div class="panel-tags">
+        <span class="tag q-top">1-NFE: &#9733;&#9733;&#9733;&#9733; (iMF: FID 1.72, the strongest from-scratch 1-NFE base)</span>
+        <span class="tag m-saturates">2&ndash;3 NFE: <strong>ideal</strong> &mdash; 1-NFE 1.72 &rarr; 2-NFE 1.54 small bump &rarr; flat past</span>
+        <span class="tag s-fast">CPU speed: fast at 1 NFE; per-step cost = backbone cost</span>
+        <span class="tag inv-partial">RF inversion: partial (collapses to FM in r&rarr;t limit)</span>
+      </div>
+
+      <p class="panel-summary">
+        Train iMF (or pMF, the pixel-space variant with JiT-style <code>x</code>-prediction) as a 1-step <em>base</em>, then polish with FD-loss in section 2. The FD-loss paper&rsquo;s canonical recipe is exactly this: post-train an iMF base with FD-loss to drop image FID from 3.12-class to 0.72 @ 1-NFE without teacher, discriminator, or per-sample target. <strong>This panel framing is deliberately narrower than section 3&rsquo;s MeanFlow discussion</strong>: here the question is only "is iMF a good base for further polish?" &mdash; not "is iMF deployable directly?". For full sub-route comparison (SoFlow, AlphaFlow, SplitMeanFlow, IntMeanFlow, TVM, EMA-tangent), see section 3.
+      </p>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>Strongest from-scratch 1-NFE base in the wiki:</strong> iMF reaches FID 1.72 @ 1-NFE / 1.54 @ 2-NFE on ImageNet-256 latent (XL/2). pMF reaches FID 2.22 @ 1-NFE pixel-space; pMF-B/16 hits 3.12 FID at 33 GFLOPs / 118 M &mdash; cheapest 1-NFE pixel result anywhere.</li>
+          <li><strong>Canonical stacking with FD-loss is published:</strong> iMF + FD-loss &rarr; 0.72 FID @ 1-NFE on ImageNet-256. The "from-iMF + FD-loss" recipe is the cleanest image-side template for a section-2 audio polish.</li>
+          <li><strong>1-NFE by construction</strong> &mdash; the pretrain output is already deployable at 1-NFE, the section-2 polish only refines distributional match (no NFE reduction needed).</li>
+          <li><strong>CFG-as-input</strong> (iMF&rsquo;s flexible-CFG conditioning) gives a sweepable guidance scale at inference. Direct surface for CLAP / MATPAC strength control.</li>
+          <li><strong>Pretrain only needs to be "good enough".</strong> Final quality comes from section-2 polish; this relaxes the pretrain budget vs. trying to push iMF as far as it can go on its own.</li>
+          <li><strong>Variance-reduction lens (2605.09235) gives a principled stabilisation knob</strong> (EMA-tangent + FM-anchor) for any iMF audio port at ~22 % wall-clock overhead.</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>JVP-in-training is FlashAttention-incompatible</strong> on stock PyTorch SDPA (until TVM&rsquo;s custom FlashAttention-JVP-backward kernel is released &mdash; the wiki flags this as the most likely cross-paper-impact deliverable). Workarounds: a forward-only finite-difference (DDE) trick drops in as a JVP replacement; SoFlow / SplitMeanFlow are JVP-free siblings (see section 3).</li>
+          <li><strong>Saturates past ~2 NFE</strong> &mdash; more NFE does not improve quality; the design point is fixed-NFE. Acceptable for this project since the target <em>is</em> 1-NFE.</li>
+          <li><strong>RF inversion is only partial</strong> &mdash; iMF&rsquo;s 1-step map collapses to the FM ODE in the <code>r &rarr; t</code> limit but is not invertible as a transition operator at arbitrary <code>(t, r)</code>. If exact inversion is a project requirement, prefer Panel B.</li>
+          <li><strong>No audio results for iMF / pMF.</strong> All headline numbers are image-side. Audio MeanFlow papers (SplitMeanFlow, MeanFlowSE, IntMeanFlow) all operate on frozen intermediate representations (mel, SSL features, latents) &mdash; raw-waveform unconditional MeanFlow with a CPU benchmark is the empty cell in the wiki, three for three.</li>
+          <li><strong>FID-MSE landscape mismatch caveat</strong> (variance-reduction paper): the gradient-MSE-optimal &beta; is not the FID-optimal &beta;. Whether FAD on audio behaves the same way is an open empirical question.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          For the project&rsquo;s 1-NFE CPU target, this panel is the strongest pretrain candidate &mdash; the FD-loss stage-2 (see <a href="../wiki/concepts/post-training.md">post-training.md</a>) is &phi;-agnostic and drops onto any audio embedding (CLAP / VGGish / AudioMAE / MATPAC). CLAP / MATPAC semantic conditioning attaches via iMF&rsquo;s in-context conditioning (replaces adaLN-zero, &minus;&#8531; params). The audio-relevant variance-reduction recommendation is to <em>only replace the tangent, not the target</em> (Proposition 3 of 2605.09235) &mdash; iMF&rsquo;s separate v-head respects this asymmetry; EMA-tangent + FM-anchor is the lighter sibling. <strong>The headline scientific question for the project on this panel: does the iMF + FD-loss image-side jump (3.12 &rarr; 0.72) carry over to audio at matched architecture and embedding?</strong> No prior art exists.
+        </p>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li><a href="../papers/2512.02012.md">iMF (2512.02012)</a> &mdash; the strongest from-scratch 1-NFE latent base (FID 1.72); the canonical pretrain target for this panel.</li>
+          <li><a href="../papers/2601.22158.md">pMF (2601.22158)</a> &mdash; pixel-space MeanFlow with JiT-style <code>x</code>-prediction; 2.22 FID @ 1-NFE pixel, cheapest 1-NFE pixel result.</li>
+          <li><a href="../papers/2511.13720.md">JiT (2511.13720)</a> &mdash; the <code>x</code>-prediction dependency that makes pMF viable in pixel space; relevant if the project goes raw-waveform without a latent.</li>
+          <li><a href="../papers/2605.09235.md">Variance-Reduction MF (2605.09235)</a> &mdash; the theoretical lens; EMA-tangent + FM-anchor is the cheapest stabilisation port to any audio backbone.</li>
+          <li>Section 3 of this document &mdash; full MeanFlow-family sub-route comparison (SoFlow, AlphaFlow, SplitMeanFlow, IntMeanFlow, TVM, EMA-tangent).</li>
+          <li>Section 2 of this document &mdash; FD-loss as the canonical stage-2 polish.</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>CPU estimate:</strong> 1-NFE by construction, so per-sample CPU cost is one backbone forward. With an STFT-domain ConvNeXt-at-hop-rate backbone (section 4), this lands in the Flow2GAN regime (~5&times; RT on Xeon at 78.9 M / 24 kHz / batch 16) &mdash; comfortably faster than real time. Training-time cost is dominated by the JVP (until TVM&rsquo;s kernel is released) or the DDE / EMA-tangent workaround; section-2 FD-loss polish adds modest extra training cost (no discriminator, no teacher in the loop).
+      </div>
+    </article>
+
+  </div>
+</section>
+<section class="section" id="section-2">
+  <header class="section-header-wrapper">
+    <h2 class="section-header"><span class="section-num">02</span> Post-Training / Finetune Methodology</h2>
+    <p class="section-intro">
+      Stage-2 methods that take a pretrained base from Section 1 (FM/RF, MeanFlow, or a multi-step diffusion teacher) and finish it to deployable 1-NFE quality. The key axis is <em>what supervision is dropped vs. kept</em> from the pretrain: pure adversarial-vs-real (ARC/APT) drops the teacher entirely; FM-pretrain + GAN finetune (Flow2GAN-style) keeps mel-perceptual reconstruction but not score regression; consistency distillation (WaveFM-style) keeps an EMA teacher but no discriminator; FD-loss keeps only a frozen embedding network. Quoted speeds in this section refer to the <strong>NFE the method targets after finishing</strong>, not a CPU number — per-step cost is inherited from the Section 4 backbone choice. Training-cost differences are real and large: APT and FD-loss are the lightest, DMD2 the heaviest (three networks resident).
+    </p>
+  </header>
+
+  <div class="panels">
+
+    <!-- ============================================================ -->
+    <!-- PANEL A — ADVERSARIAL FINETUNE (umbrella with 3 sub-modes)   -->
+    <!-- ============================================================ -->
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">A. Adversarial Finetune</h3>
+        <p class="panel-tagline">Three distinct paradigms united by a discriminator; pick by what role distillation plays.</p>
+      </header>
+      <div class="panel-tags">
+        <span class="tag q-top">Quality lift: ★★★★ (A2 escapes teacher ceiling; A1/A3 match teacher)</span>
+        <span class="tag m-fixed">NFE behaviour: fixed N (separate model per N for A1; 1-NFE for A2)</span>
+        <span class="tag s-mid">Training cost: medium (A1, A2) to slow (A3 — three networks)</span>
+        <span class="tag inv-destroyed">RF inversion: destroyed (deterministic ODE path is collapsed)</span>
+      </div>
+      <p class="panel-summary">
+        The dominant post-training family in 2024–2026. Three distinct sub-modes differ in what role distillation plays: <strong>A1 Flow2GAN-style</strong> — FM pretrain, then unroll N=1/2/4 and GAN-finetune end-to-end against MPD + MRD with multi-scale mel reconstruction (has the headline &gt;RT CPU number on audio); <strong>A2 ARC / APT</strong> — drop distillation entirely after warm-start, pure adversarial against real data with R1-approx + relativistic + contrastive D (escapes the teacher ceiling, CFG-free at inference); <strong>A3 DMD2</strong> — score distillation paired with a real-data GAN (three networks resident — the heaviest option). All three destroy rectified-flow invertibility (confirmed empirically on the project's SAO vs ARC test). The choice is governed by: VRAM ceiling (rules out A3 on a 4090 at audio scale), whether you want a single model serving multiple NFE counts (none do — separate models per N), and whether you want to escape the teacher's quality ceiling (only A2 does).
+      </p>
+
+      <!-- ===================== Sub-mode A1: Flow2GAN-style ===================== -->
+      <div class="subpanel">
+        <h4 class="subpanel-title">A1 — Flow2GAN-style FM-pretrain + GAN finetune</h4>
+        <p>
+          Stage 1 is a standard FM/RF pretrain on raw audio (x₁-prediction, multi-resolution STFT loss, spectral-energy-inverse weighting or mel-conditioned prior; see Section 1). Stage 2 unrolls the FM checkpoint for <strong>N = 1, 2, or 4</strong> sampling steps and adversarially finetunes the unrolled trajectory end-to-end. <strong>One model per N</strong> — they don't share weights. Loss is hinge-GAN with external <strong>MPD + MRD</strong> discriminators, multi-scale mel-L1 reconstruction, and multi-resolution STFT loss; <em>no score distillation, no teacher-state regression.</em> The FM stage is the only source of teacher knowledge — it sets the structure, and the GAN sharpens the marginal at low NFE.
+        </p>
+        <p>
+          <strong>Headline numbers (Flow2GAN, <a href="../papers/2512.23278.md">2512.23278</a>):</strong> STFT-domain ConvNeXt, 78.9 M params. PESQ 4.19 / 4.44 / 4.48 at 1 / 2 / 4 NFE, MOS 4.39 at 1-NFE. <strong>CPU xRT 4.85 on Intel Xeon at batch 16</strong> — the only published &gt;real-time CPU number for an audio FM-class model and the headline benchmark for this entire panel. The 16-NFE FM-only ablation (PESQ 4.17) <em>loses</em> to FM-pretrain + 1-NFE GAN-finetune (PESQ 4.30) — the GAN finetune is load-bearing at low NFE, not just sharpening.
+        </p>
+        <p>
+          <strong>PeriodWave-Turbo (<a href="../papers/2408.08019.md">2408.08019</a>)</strong> applies the same recipe to a waveform-domain multi-period U-Net — PESQ 4.454 @ 4 NFE on LibriTTS, but CPU xRT 0.12 (~40× slower than Flow2GAN). <strong>The architecture, not the recipe, is what determines CPU speed</strong> — and the recipe is robust across backbones. Crucial PeriodWave-Turbo ablation: <em>raw-STFT L1 alone produces electric noise</em> (Tab. 9) — phase-error gradient misleads, so multi-scale mel is mandatory in the reconstruction term. DMD-style score distillation did not help when mel conditioning is strong; open question whether it helps under weaker / unconditional conditioning.
+        </p>
+        <p>
+          <strong>Training cost:</strong> small — ~1k steps for PeriodWave-Turbo, 11k–110k for Flow2GAN per N. Three networks (G + MPD + MRD); MPD/MRD are tiny vs. the generator. Fits comfortably on a 4090.
+        </p>
+      </div>
+
+      <!-- ===================== Sub-mode A2: ARC / APT ===================== -->
+      <div class="subpanel">
+        <h4 class="subpanel-title">A2 — ARC / APT (drop distillation, pure adversarial-vs-real)</h4>
+        <p>
+          The paradigm-defining shift of 2025. Warm-start from an FM teacher with deterministic distillation, then <strong>drop the distillation loss entirely</strong> and continue with <em>pure adversarial-vs-real-data</em>. There is no reconstruction term, no teacher-state regression, no score-matching — just the discriminator. Three load-bearing tricks distinguish this from a naive GAN finetune:
+        </p>
+        <ol>
+          <li>
+            <strong>R1-approximation</strong> <code>L_aR1 = ‖D(x) − D(x+σε)‖²</code> — first-order finite-difference surrogate for the true R1 gradient penalty. FSDP/FlashAttention-compatible (real R1 requires double-backward, which current stacks don't support inside FSDP). λ=100, σ=0.01 for image / 0.1 for video in Seaweed-APT. <strong>Mandatory for transformer discriminators</strong> — without it, D collapses to 0 within a few hundred steps. For small conv-only audio discriminators (MPD/MRD), recommended but less load-bearing.
+          </li>
+          <li>
+            <strong>Relativistic loss paired by prompt</strong>: <code>L_R = E[ f(Δ_gen − Δ_real) ]</code> with <code>f(x) = −log(1 + e^{−x})</code>. The discriminator scores the <em>difference</em> between a real and a fake sharing the same condition (Bradley-Terry preference interpretation). ARC additionally disentangles the noise schedules used to corrupt the generator and discriminator inputs.
+          </li>
+          <li>
+            <strong>Contrastive discriminator term on shuffled prompts</strong>: <code>L_C = E[ f(Δ_real(x,P[c]) − Δ_real(x,c)) ]</code>. D must score correctly-paired (audio, condition) above shuffled pairings. This <strong>replaces CFG at inference</strong> — the conditional gradient is baked into the discriminator and propagated into G, removing the doubled per-step cost of classifier-free guidance.
+          </li>
+        </ol>
+        <p>
+          <strong>Discriminator init from G's backbone</strong>: ~75 % of the RF DiT blocks + a small conv head (~274 M for ARC). Audio doesn't have a DINOv2-quality external backbone, so reusing the FM model's own learned features sidesteps the gap.
+        </p>
+        <p>
+          <strong>Headline results.</strong> Seaweed-APT (<a href="../papers/2501.08316.md">2501.08316</a>): first 1-NFE 720p24 2 s video; <em>beats own 25-NFE teacher</em> on visual fidelity at 1-NFE — distillation ceiling is real and APT escapes it. ARC (<a href="../papers/2505.08175.md">2505.08175</a>): 8-NFE ARC beats 100-step Stable Audio Open on FD and CCDS with Div MOS 4.4 vs 4.0 — the relativistic + contrastive structure <em>increases</em> diversity over the teacher, inverting the standard adversarial mode-collapse trap. 75 ms on H100; 6.6 s on a Vivo X200 Pro mobile CPU (Int8 dynamic quant) — first text-to-audio on mobile.
+        </p>
+        <p>
+          <strong>Failure mode confirmed in this project's testing:</strong> ARC checkpoints completely <em>destroy RF inversion</em> — the trajectory is collapsed by adversarial pressure, so deterministic round-trip (encode → decode) no longer recovers the input. SAO inverts cleanly; ARC of SAO does not. This is structural to the pure-adversarial-vs-real recipe, not a tuning artifact.
+        </p>
+        <p>
+          <strong>Training cost:</strong> medium. ~300 G-updates after warm-start for Seaweed-APT; 100k iters at batch 256 on 8×H100 for ARC. <strong>Two networks in VRAM</strong> (G + D); no teacher after warm-start. Lightest training-time footprint among the three adversarial paradigms.
+        </p>
+        <p>
+          Background: <strong>ADD (<a href="../papers/2311.17042.md">2311.17042</a>)</strong> is the canonical paradigm-A predecessor: hinge-GAN with frozen DINOv2 backbone + trainable heads + score-regression distillation throughout. ADD acknowledged but did not solve mode collapse — APT's resolution is to drop distillation, DMD2's is to add real-data GAN on top of score distillation (next sub-mode).
+        </p>
+      </div>
+
+      <!-- ===================== Sub-mode A3: DMD2 ===================== -->
+      <div class="subpanel">
+        <h4 class="subpanel-title">A3 — DMD2 (score distillation + real-data GAN)</h4>
+        <p>
+          Score distillation (reverse-KL on the teacher's score field) paired with a real-data GAN to plug the mode-collapse hole. <strong>Three networks live in VRAM at training time:</strong> the generator G, a frozen multi-step teacher (provides the score), and a fake critic (estimates the score of the student's current distribution). The discriminator shares the fake critic's backbone with a small added head, so D adds minimal extra parameters — but the fake critic itself is full-size. Architectural changes vs original DMD (<a href="../papers/2405.14867.md">2405.14867</a>):
+        </p>
+        <ol>
+          <li><strong>Drop the LPIPS regression dataset</strong> (700 A100-days at SDXL scale, replaced with on-policy training).</li>
+          <li><strong>TTUR</strong> — 5 fake-critic updates per generator update. Stabilises pure distribution matching after regression is removed.</li>
+          <li><strong>GAN loss against real data</strong> plugs the reverse-KL mode-seeking hole. Tab. 3 ablations: DMD+TTUR alone gives FID 2.61; GAN alone gives 2.56; combined gives 1.51. The gradients are <em>complementary, not redundant</em> — distillation gives compositional structure, GAN gives sharpness + diversity.</li>
+          <li><strong>Backward simulation</strong> for multi-step: simulate the inference sampling chain at training time, closing the train-test mismatch. 4-step SDXL beats own 100-NFE teacher on FID and patch-FID.</li>
+        </ol>
+        <p>
+          <strong>When to pick this over APT.</strong> DMD2 is the right choice when you specifically want score-distillation's theoretical guarantees (matching the teacher's score field is provably mode-covering when combined with the GAN regulariser) and when you can afford the VRAM. PeriodWave-Turbo's null result for DMD-style distillation under <em>strong</em> mel conditioning suggests DMD2 may matter more for weakly-conditional / unconditional audio teachers — open question.
+        </p>
+        <p>
+          <strong>Training cost:</strong> heaviest in this section. Three full-size networks at train time (G + frozen teacher + fake critic; D shares fake critic). Tight on a 24 GB 4090 for audio FM teachers above ~100 M params; mixed precision usually rescues it.
+        </p>
+      </div>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>A1 Flow2GAN:</strong> only post-training method with a published &gt;real-time CPU benchmark (4.85× xRT on Xeon). Recipe is robust across backbones (STFT ConvNeXt vs waveform multi-period U-Net); architecture choice is what determines CPU speed.</li>
+          <li><strong>A2 APT/ARC:</strong> escapes teacher quality ceiling (beats own 25-NFE teacher on human eval). CFG-free at inference via contrastive D — halves per-step cost for conditional models. Increases diversity over teacher (inverts the standard adversarial trap). Lightest VRAM among adversarial options.</li>
+          <li><strong>A3 DMD2:</strong> principled mode-collapse fix via complementary score + GAN gradients. Backward simulation closes train-test mismatch for multi-step students. The right baseline for distilling any future raw-audio FM teacher.</li>
+          <li>All three: small iteration budget vs the pretrain stage (dominated by hardware/batch size, not iters).</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>All three destroy RF invertibility</strong> — deterministic round-trip is gone. Confirmed empirically for ARC on SAO; structural to adversarial pressure on the ODE path.</li>
+          <li><strong>A1:</strong> separate model per N (1, 2, 4) — no single checkpoint serving multiple NFE counts. Mel conditioning is load-bearing in published recipes; unconditional version untested.</li>
+          <li><strong>A2:</strong> R1-approx is mandatory for transformer D; tuning relativistic+contrastive losses jointly is fiddly. Untested on raw-waveform or unconditional audio.</li>
+          <li><strong>A3:</strong> three networks in VRAM is the heaviest training footprint. PeriodWave-Turbo's null DMD result suggests it may not help under strong conditioning.</li>
+          <li>All adversarial methods need active diversity instrumentation (Vendi / Coverage / CCDS) — without it, mode collapse goes unnoticed until eval.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          <strong>Discriminator stack for audio:</strong> default to <strong>MPD + MRD</strong> (multi-period + multi-resolution STFT) as in Flow2GAN/PeriodWave-Turbo, optionally MS-SB-CQTD. For paradigm-B-style transformer discriminators on audio, use the <strong>FM model's own backbone as D's feature extractor</strong> (ARC's 75 %-of-DiT-blocks trick) — audio has no DINOv2-quality external backbone, so init-from-generator is the right port of ADD/LADD's frozen-backbone trick.
+        </p>
+        <p>
+          <strong>Reconstruction term:</strong> multi-scale mel-L1 is mandatory; raw-STFT L1 alone collapses to electric noise (PeriodWave-Turbo Tab. 9, phase-error gradient misleads). Multi-resolution STFT loss is fine; raw L1 is not.
+        </p>
+        <p>
+          <strong>CLAP/MATPAC integration:</strong> the project conditions all methods on a learned semantic feature net. For A2 (ARC/APT), the contrastive D term is the natural place to inject CLAP/MATPAC — shuffle CLAP embeddings across the batch instead of raw prompts. For A1 (Flow2GAN-style), G is conditioned on CLAP/MATPAC directly; D ignores conditioning by default but can accept it as an extra logit head.
+        </p>
+        <p>
+          <strong>Highest-EV one-line experiments suggested by the wiki:</strong> add <strong>R2</strong> (R1 on fakes too) to MPD/MRD — R3GAN's theory predicts stability + diversity gains, no audio paper has tested. And: try ARC's contrastive D as a CFG-killer on an existing conditional audio model, without the full APT machinery.
+        </p>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li><a href="../papers/2512.23278.md">Flow2GAN — 2512.23278</a> (A1, STFT-domain ConvNeXt, 4.85× CPU xRT)</li>
+          <li><a href="../papers/2408.08019.md">PeriodWave-Turbo — 2408.08019</a> (A1, waveform-domain, raw-STFT-L1 ablation)</li>
+          <li><a href="../papers/2501.08316.md">Seaweed-APT — 2501.08316</a> (A2, paradigm-defining image/video APT)</li>
+          <li><a href="../papers/2505.08175.md">ARC — 2505.08175</a> (A2, audio-domain APT, contrastive D, CFG-free)</li>
+          <li><a href="../papers/2311.17042.md">ADD — 2311.17042</a> (early adversarial-distillation lineage, frozen-DINO + heads)</li>
+          <li><a href="../papers/2405.14867.md">DMD2 — 2405.14867</a> (A3, score + real-data GAN, TTUR)</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>Training cost:</strong>
+        A1: ~1k–110k iters per N; 3 nets (G + MPD + MRD), fits a 4090. ·
+        A2: ~300 G-updates (Seaweed) to 100k iters at batch 256 on 8×H100 (ARC); 2 nets (G + D init-from-G). ·
+        A3: ~100k iters on SDXL-class teachers; <strong>3 full networks</strong> (G + frozen teacher + fake critic) — tight on a 24 GB 4090 for audio.
+      </div>
+    </article>
+
+    <!-- ============================================================ -->
+    <!-- PANEL B — FD-loss polish                                     -->
+    <!-- ============================================================ -->
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">B. FD-loss polish</h3>
+        <p class="panel-tagline">Fréchet distance in representation space, decoupled moments — no D, no teacher, no per-sample target.</p>
+      </header>
+      <div class="panel-tags">
+        <span class="tag q-top">Quality lift: ★★★★ (0.72 FID @ 1-NFE on ImageNet-256 atop iMF)</span>
+        <span class="tag m-fixed">NFE behaviour: 1-NFE (inherits NFE from the base it polishes)</span>
+        <span class="tag s-fast">Training cost: fast (no D, no teacher in memory)</span>
+        <span class="tag inv-untested">RF inversion: untested (speculative: preservable with trajectory-anchor reg)</span>
+      </div>
+      <p class="panel-summary">
+        Take any pretrained generator (one-step or multi-step) and post-train it against Fréchet distance in a frozen feature-net's representation space. <a href="../papers/2604.28190.md">Representation Fréchet Loss (2604.28190)</a> breaks the previous "FD-as-eval-only" wall by <strong>decoupling the population used to estimate moments from the batch that carries gradients</strong> — either a MoCo-style queue of recent generated features or an EMA on first/second moments. Backprop only through the current ~1k batch; the moment estimator sees a much larger effective population. The result is a distributional loss with no per-sample target, no adversarial inner loop, and no teacher resident in VRAM — just G and a frozen feature backbone φ.
+      </p>
+      <p class="panel-summary">
+        <strong>Headline:</strong> a one-step generator post-trained with FD-loss reaches <strong>0.72 FID @ 1-NFE on ImageNet-256</strong> when stacked on an iMF base — the cleanest stacked pipeline in the from-scratch+polish family. The 0.72 number comes from FD-loss <em>post-training</em> the iMF checkpoint, not training from scratch; the jump from iMF's baseline FID to 0.72 is the polish delta. φ-agnostic — works with CLAP, MERT, AudioMAE, VGGish, EnCodec encoder, or any other frozen audio embedding. <strong>Untested on audio at the time of this writeup</strong> — the most direct port-to-audio experiment in this section.
+      </p>
+      <p class="panel-summary">
+        <strong>Speculative RF-inversion preservation.</strong> If FD-loss is paired with a <strong>trajectory-anchor regulariser</strong> <code>‖v_θ − v_pretrain‖²</code> evaluated on random <code>(x_t, t)</code> pairs sampled from the pretrain noising distribution, the velocity field is constrained near the original FM solution. Theoretically clean: the FD-loss pulls the 1-NFE marginal toward the data distribution, the anchor keeps the velocity field globally near the invertible FM teacher. Untested. If it works, it's the only post-training method in this section that <em>preserves</em> RF invertibility.
+      </p>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>No discriminator</strong> — no min-max optimisation, no mode-collapse instrumentation, no R1/R2/spectral-norm tuning.</li>
+          <li><strong>No teacher in memory</strong> — only G and a frozen φ. Lightest VRAM footprint in the section.</li>
+          <li><strong>No per-sample target</strong> — distributional supervision means no alignment / pairing constraint with a teacher.</li>
+          <li><strong>φ-agnostic</strong> — drops onto CLAP/MERT/AudioMAE without recipe changes.</li>
+          <li><strong>Composes with any base</strong> — iMF, pMF, IMM, FM, MeanFlow, even a multi-step diffusion model.</li>
+          <li>Cleanest stacked pipeline: iMF (Section 1) + FD-loss reached SOTA 1-NFE FID on ImageNet-256.</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>Untested on audio.</strong> No published audio FD-loss number; entire panel is a structural inference from the image case.</li>
+          <li><strong>φ-quality dominates the result.</strong> Audio embedding nets are weaker than DINOv2-class image backbones; the FD loss is only as discriminating as φ is.</li>
+          <li><strong>Moments-only supervision</strong> — first and second moments of φ-features. Higher-order distributional structure (multi-modality, skew) is left to the base model and not corrected by the polish.</li>
+          <li>RF-inversion preservation is <em>speculative</em> — requires the trajectory-anchor regulariser, untested as a combined recipe.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          <strong>φ choice is the headline experiment.</strong> Candidate audio embeddings: <strong>CLAP</strong> (text-aligned, 512-d, common in T2A eval), <strong>MERT</strong> (music-pretrained SSL, 1024-d, multi-layer features available), <strong>AudioMAE</strong> (general-purpose MAE, mel-spectrogram input), <strong>MATPAC</strong> (project's own learned semantic feature net). A multi-φ ensemble (concatenate features from two or three) is the natural first sweep — equivalent to ADD's multi-scale head ensemble without the head training.
+        </p>
+        <p>
+          <strong>Queue vs EMA.</strong> MoCo-style queue (~64k recent generated features) gives a low-variance moment estimator at zero extra-network cost. EMA on first/second moments is cheaper still (no stored feature bank) but biases toward older mixtures; pick queue if memory allows.
+        </p>
+        <p>
+          <strong>Stacking story for this project:</strong> from-scratch iMF / pMF / IMM / MeanFlow on raw waveform → FD-loss polish at 1-NFE with CLAP+MERT ensemble for φ. Single biggest open audio experiment in the wiki on the post-training side, with the lowest training-cost footprint to run.
+        </p>
+        <p>
+          <strong>Trajectory-anchor variant:</strong> if applied to an FM/RF base and RF-inversion preservation matters (e.g. for prompt editing or stem extraction), add <code>‖v_θ − v_pretrain‖²</code> on random <code>(x_t, t)</code> with a moderate λ. Untested but theoretically clean; first experiment to run after a vanilla FD-loss baseline.
+        </p>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li><a href="../papers/2604.28190.md">Representation Fréchet Loss — 2604.28190</a> (0.72 FID @ 1-NFE on ImageNet-256, iMF base)</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>Training cost:</strong> small iteration budget (image case used ~50k post-train steps over an iMF base); <strong>2 networks in VRAM</strong> only (G + frozen φ; queue stores features, not gradients). Cheapest training-time footprint in this section. Fits comfortably on a 4090 even for ~150 M-param audio backbones with a CLAP-scale φ.
+      </div>
+    </article>
+
+    <!-- ============================================================ -->
+    <!-- PANEL C — Consistency Distillation (WaveFM recipe)           -->
+    <!-- ============================================================ -->
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">C. Consistency Distillation (WaveFM recipe)</h3>
+        <p class="panel-tagline">EMA teacher, truncated-Gaussian t-schedule, one student serves multi-NFE — stable but currently behind adversarial on quality.</p>
+      </header>
+      <div class="panel-tags">
+        <span class="tag q-mid">Quality lift: ★★ to ★★★ (PESQ 3.51 @ 1-NFE, behind Flow2GAN's 4.19)</span>
+        <span class="tag m-graceful">NFE behaviour: graceful (single model trained at varying t, runs at 1 or 6 NFE)</span>
+        <span class="tag s-fast">Training cost: fast (25 k steps, ~2 h on 4090)</span>
+        <span class="tag inv-destroyed">RF inversion: destroyed (CM collapses the trajectory by design)</span>
+      </div>
+      <p class="panel-summary">
+        Stage 2 swaps adversarial training for <strong>consistency distillation against an EMA teacher</strong>. Same FM/RF pretrain skeleton as the Flow2GAN-style recipe (A1); the finishing move is deterministic teacher-matching, not a discriminator. <a href="../papers/2503.16689.md">WaveFM (2503.16689)</a> is the canonical waveform-domain recipe: truncated-Gaussian sampling <code>t ~ Ñ(0, 0.33²)</code> on <code>[0, 0.99]</code>, EMA decay μ=0.999, Δt=0.01, loss = L₂ distance + STFT-with-phase loss + mel-L1, 25 k total post-train steps (~2 h on a 4090). Targets set to clean waveforms at <code>t=1</code> (deviates from standard CM's <code>c_skip·x + c_out·F_θ</code> parameterisation, which the authors claim is incompatible with their x₁-reparameterisation).
+      </p>
+      <p class="panel-summary">
+        <strong>Headline result.</strong> 1-NFE PESQ 3.51 / SMOS 4.11 on LibriTTS dev (waveform-domain HiFi-GAN-MRF 1-D U-Net, 19.5 M params), beating 6-NFE DiffWave / PriorGrad / FastDiff at 6× fewer NFE. <strong>CPU xRT 0.64</strong> (Flow2GAN's Tab. 7 re-benchmark) — sub-real-time, same architectural family as PeriodWave-Turbo. One model serves multiple NFE counts: train at varying t, then run at 1 or 6 NFE without retraining. <strong>The empty cell — and the project's preferred candidate experiment — is WaveFM's distillation recipe on an STFT-domain Flow2GAN-style backbone</strong>, which has never been done. Would presumably combine CM training stability (no D balancing, no mode-collapse instrumentation, no GAN tuning) with Flow2GAN's CPU-fast operating sequence length.
+      </p>
+      <p class="panel-summary">
+        <strong>Honest framing.</strong> Consistency-model methods have been less competitive than adversarial post-training in the most recent literature (2024–2026): Flow2GAN beats WaveFM at PESQ even with a larger model, and APT/ARC beats teacher quality at 1-NFE in ways CM does not. Per IMM Lemma 1, WaveFM is the M=1 energy-kernel corner of inductive MMD; natural drop-in upgrades are <strong>M=2 + Laplace / signature kernel</strong> — replaces L₂ teacher-matching with higher-moment matching. This is the cleanest theoretical path to closing the CM-vs-GAN gap without adding a discriminator.
+      </p>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>Single model, multi-NFE.</strong> One checkpoint runs at 1, 2, 4, or 6 NFE — unlike Flow2GAN's separate-model-per-N. Operationally simpler at inference.</li>
+          <li><strong>Training stability.</strong> Deterministic teacher target, no min-max optimisation. No D balancing, no R1/R2 tuning, no mode-collapse instrumentation. Significantly less fiddly than any paradigm-A/B/C1 recipe.</li>
+          <li><strong>Tiny budget.</strong> 25 k steps total post-train, ~2 h on a single 4090. Cheapest published post-training pipeline.</li>
+          <li><strong>No discriminator</strong> means no audio-D architecture choice (MPD/MRD/MS-SB-CQTD) to validate; only the EMA teacher and the loss terms matter.</li>
+          <li><strong>Independent re-derivation of x₁-prediction.</strong> WaveFM and Flow2GAN both predict x₁, not v — convergent evidence for the right parameterisation on audio.</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>Quality currently behind adversarial.</strong> PESQ 3.51 at 1-NFE vs Flow2GAN's 4.19 (different model sizes and architectures, but the gap is large). Adversarial finishing moves dominate the current frontier.</li>
+          <li><strong>RF invertibility destroyed by design</strong> — consistency distillation explicitly collapses the trajectory to its endpoint. There is no version of this recipe that preserves the deterministic ODE path.</li>
+          <li><strong>Brittle to distribution shift at 1-NFE.</strong> WaveFM's 1-NFE OOD gap is wider than the 6-NFE gap — the few-step quality is fragile on out-of-distribution inputs.</li>
+          <li><strong>STFT-domain version untested.</strong> The wiki explicitly flags "FM + CM on an STFT-domain backbone" as an empty cell. The waveform-domain CPU xRT of 0.64 may improve drastically on STFT, but this is speculation.</li>
+          <li><strong>Conditional on mel.</strong> Published recipe is a mel-conditional vocoder; unconditional version is open.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          <strong>Loss term composition.</strong> The published recipe is L₂ on waveform + STFT-with-phase loss + mel-L1. The STFT-with-phase loss is unusual — most audio recipes drop the phase term as it produces misleading gradients (PeriodWave-Turbo's raw-STFT-L1 collapse). WaveFM's claim is that combined with the EMA teacher target it stabilises rather than destabilises; this should be validated on STFT-domain backbones before adoption.
+        </p>
+        <p>
+          <strong>CLAP/MATPAC integration.</strong> The student is conditioned on the same feature net as the base; the EMA teacher carries the conditioning through deterministically. No special handling required — conditioning sits inside G, the consistency loss operates on G's output.
+        </p>
+        <p>
+          <strong>The Section's recommended audio experiment with this panel</strong> is the empty-cell port: take a Flow2GAN-style STFT-domain ConvNeXt FM pretrain, apply WaveFM's distillation recipe instead of GAN finetuning. Match Flow2GAN's compute budget. Compare PESQ / MOS / CPU xRT / diversity. <strong>Single most informative cross-paper experiment</strong> on the audio post-training axis per the wiki.
+        </p>
+        <p>
+          <strong>IMM upgrade path.</strong> WaveFM's M=1 energy kernel is the simplest case of inductive MMD; M=2 + Laplace or signature kernel replaces the L₂ teacher-match with a higher-moment match. This is a one-line change to the loss and the most plausible route to closing the CM-vs-GAN quality gap without adopting an adversarial finishing move.
+        </p>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li><a href="../papers/2503.16689.md">WaveFM — 2503.16689</a> (FM-pretrain + CM finetune, waveform domain, 25 k steps, ~2 h on 4090)</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>Training cost:</strong> ~25 k post-train steps (~2 h on a 4090). <strong>2 networks in VRAM</strong> (student + EMA teacher, both same size). No discriminator. Fastest published recipe in this section by wall-clock; tied with FD-loss on VRAM footprint.
+      </div>
+    </article>
+
+  </div>
+</section>
+<section class="section" id="section-3">
+  <header class="section-header-wrapper">
+    <h2 class="section-header"><span class="section-num">03</span> From-Scratch 1-Stage Methodology</h2>
+    <p class="section-intro">
+      Methods that go directly to a deployable 1-NFE generator in <strong>one training run</strong>, without the Section 1 pretrain + Section 2 polish ladder. The whole training budget is bet on one objective; the catch is stability — a single divergent run with no fallback to a usable multi-step base. The MeanFlow family is the dominant entry and sits at the current image-side 1-NFE frontier (iMF: FID 1.72 on ImageNet-256 latent); pure 1-step GAN and Drifting are the two orthogonal alternatives. MeanFlow also appears in Section 1 as a <em>pretrain</em> for FD-loss polish — there it only has to be a decent base; <strong>here it has to function alone as the deployable artefact</strong>, which raises the bar on stability and 1-NFE quality. Cross-reference Section 1 panel C for the pretrain framing.
+    </p>
+  </header>
+
+  <div class="panels">
+
+    <!-- ============================================================ -->
+    <!-- PANEL A — MeanFlow Family (1-stage)                          -->
+    <!-- ============================================================ -->
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">A. MeanFlow Family (1-stage)</h3>
+        <p class="panel-tagline">Single output parameterisation <code>u_θ(z_t, t, r)</code> = average velocity over <code>[r, t]</code>; six independent answers to "what about the JVP".</p>
+      </header>
+      <div class="panel-tags">
+        <span class="tag q-top">Quality lift: ★★★★★ (iMF 1.72 / 1.54 FID @ 1-/2-NFE — best 1-NFE anywhere in the wiki)</span>
+        <span class="tag m-saturates">NFE behaviour: trained primarily for 1-NFE; most variants saturate or degrade past their training NFE</span>
+        <span class="tag s-mid">Training cost: medium (1 forward + JVP-or-DDE-or-3-forwards per step depending on variant)</span>
+        <span class="tag inv-partial">RF inversion: partial (collapses to FM at r→t)</span>
+      </div>
+      <p class="panel-summary">
+        Reformulate FM so that <em>one forward pass</em> produces the displacement: predict the <strong>average velocity</strong> <code>u_θ(z_t, t, r) ≈ (1/(t−r)) ∫_r^t v dτ</code>; at inference, <code>x_0 = x_1 − u_θ(x_1, 1, 0)</code> in one shot. All family members share that output parameterisation; they differ on (a) the identity used to supervise <code>u_θ</code>, (b) whether/how the JVP appears, and (c) the regression target. The lineage anchor is <a href="../papers/2410.12557.md">Shortcut Models (2410.12557)</a> — discrete dyadic <code>d</code>-conditioning + binary bootstrap, no JVP, no curriculum, no teacher, 16 % training overhead. Every method below refines or generalises Shortcut along one axis.
+      </p>
+      <p class="panel-summary">
+        <strong>Headline 1-NFE leader for this section:</strong> <a href="../papers/2512.02012.md">iMF (2512.02012)</a> at <strong>FID 1.72 / 1.54 @ 1-/2-NFE on ImageNet-256 latent</strong> (DiT-XL/2, 240 epochs). Second-place φ-free MeanFlow-family from-scratch: <a href="../papers/2510.20771.md">AlphaFlow-XL/2+ at 2.58 / 2.15</a>. Cheapest 1-NFE <em>pixel</em>-space result anywhere in the wiki: <a href="../papers/2601.22158.md">pMF-B/16 at 3.12 FID with 33 GFLOPs and 118 M params</a>. The image-side 1-NFE frontier <em>is</em> this family.
+      </p>
+
+      <!-- ===================== Sub-row 1: JVP-based stack ===================== -->
+      <div class="subpanel">
+        <h4 class="subpanel-title">A.1 — JVP-based stack: iMF + TVM refinements + (optional) pMF pixel-port</h4>
+        <p>
+          The current frontier recipe. Keep the JVP, but engineer around the variance amplification it causes. The three components compose; <strong>TVM does not compete with iMF, it extends it</strong>.
+        </p>
+        <p>
+          <strong><a href="../papers/2512.02012.md">iMF (2512.02012)</a> — the headline 1-NFE result.</strong> Three changes vs. vanilla MeanFlow: (i) <strong>v-loss compound prediction</strong> — regression target is network-independent <code>‖V_θ − (e − x)‖²</code> where <code>V_θ = u_θ + (t−r)·JVP_sg(u_θ; v_θ)</code> with stop-grad on the JVP, so the target is the constant <code>e − x</code> and only the JVP-bearing compound depends on <code>θ</code>; (ii) <strong>in-context conditioning</strong> replaces adaLN-zero — class label + timestep tokens prepended to the sequence, <strong>−⅓ of the parameter budget</strong>; (iii) <strong>ω-as-conditioning input</strong> — CFG scale enters as a network input, making guidance <em>sweepable at inference</em> without retraining. <strong>FID 1.72 @ 1-NFE / 1.54 @ 2-NFE</strong> on ImageNet-256 latent at DiT-XL/2 / 240 epochs. <em>Does not compose with FlashAttention</em> (JVP blocks the kernel) — this is the load-bearing constraint that motivates TVM.
+        </p>
+        <p>
+          <strong><a href="../papers/2511.19797.md">TVM (2511.19797)</a> — the JVP engineering + theoretical refinements.</strong> Identity-construction-level fix: differentiate the integral <code>f = ∫_t^s u dr</code> w.r.t. the <em>terminal time s</em> rather than the start time <code>t</code>. Because <code>f_θ(x_t, t, s) = (s − t)·F_θ</code>'s only <code>s</code>-dependence is the scalar prefactor, <strong>the JVP propagates only through the one-dimensional s-coordinate</strong> — the Jacobi factor on the <code>x_t</code>-axis (the variance-amplifying axis) <em>never enters the propagated gradient</em>. Four engineering pieces that compose with iMF:
+        </p>
+        <ol>
+          <li><strong>RMSNorm-everywhere Lipschitz fix</strong> — QK-Norm via learnable RMSNorm; LayerNorm → parameter-free RMSNorm⁻; AdaLN rewritten as <code>RMSNorm⁻(x) ⊙ RMSNorm⁻(a(t)) + RMSNorm⁻(b(t))</code>. <em>Mandatory on DiT</em> — activations explode at ~12 k steps without it (Fig. 4). The most portable architectural trick of the paper — stabilises any JVP-based fastforward on DiT.</li>
+          <li><strong>Custom fused FlashAttention-with-backward-through-JVP kernel</strong> (Appx. C). <strong>−65 % peak memory, faster than naive PyTorch SDPA</strong>; detach-JVP mode at 0.69 s/step on H100 beats MeanFlow's own kernel (0.81 s). <em>Not yet released</em>, but when it lands it unblocks every JVP-based MeanFlow recipe on Transformer backbones — expected to be the single most cross-paper-impact deliverable in this family.</li>
+          <li><strong>Random CFG at training without collapse</strong> — scaled parameterisation <code>(s−t)·w·F_θ</code> + <code>1/w²</code> loss weighting (Eq. 15). MeanFlow's JVP blows up when <code>w</code> is randomised because <code>‖u(x_t, t)‖</code> varies wildly with <code>w</code>; TVM's JVP doesn't see <code>u(x_t, t)</code>.</li>
+          <li><strong>First 2-Wasserstein upper bound for a one-step generator</strong> (Theorem 1) under model Lipschitz continuity — at single-sample-per-step cost, no multi-particle MMD needed (closes the IMM gap).</li>
+        </ol>
+        <p>
+          TVM's own headline FID (<strong>3.29 @ 1-NFE on DiT-XL/2 ImageNet-256</strong>) is worse than iMF's 1.72 — <em>but the matched-protocol improvement is real</em>: vanilla MeanFlow 3.43 → TVM 3.29 on the <em>same</em> DiT-XL/2 with no curriculum, no v-loss, no in-context conditioning. <strong>The right read is "TVM is the engineering stack; iMF is the regression-target trick; they compose"</strong> — but the paper itself does not run iMF+TVM, so the composition is constructable but untested. 4-NFE TVM beats every 500-NFE diffusion baseline at matched model size (FID 1.99 ImageNet-256 / 2.94 ImageNet-512). <strong>Non-monotonic NFE</strong> caveat: best 1-NFE and best 4-NFE checkpoints use different CFG (<code>w = 2.0</code> vs <code>w = 1.75</code>), so quality is not monotonic on a single checkpoint.
+        </p>
+        <p>
+          <strong><a href="../papers/2601.22158.md">pMF (2601.22158)</a> — iMF in pixel-space.</strong> Three additions to iMF: (i) <strong>x-prediction</strong> à la <a href="../papers/2511.13720.md">JiT (2511.13720)</a> — network outputs the denoised quantity on the data manifold (pMF Tab. 2 confirms <code>u</code>-pred collapses to 164 FID at patch-dim 768 while <code>x</code>-pred stays at 9.56); (ii) <strong>perceptual loss on <code>x_θ</code></strong> — LPIPS + ConvNeXt-V2 directly on the predicted clean sample, ~6 FID points; (iii) <strong>patch-size-as-cost-knob</strong> with fixed 256-token budget — GFLOPs flat across 256² / 512² / 1024². Headline pixel results: <strong>pMF-H/16 at 2.22 FID / 271 GFLOPs</strong> (first viable 1-NFE pixel MF, no φ); <strong>pMF-B/16 at 3.12 FID / 33 GFLOPs / 118 M params</strong> — the cheapest 1-NFE pixel result anywhere in the wiki. <strong>Directly portable to raw waveform via 1-D patching</strong> if going Transformer-on-waveform: 1 s @ 22.05 kHz with 256 tokens → 86-sample patches; 10 s → 860-sample patches; per-token FLOPs flat. The perceptual loss generalises naturally — MR-STFT + AudioMAE-distance is the audio analogue of LPIPS + ConvNeXt-V2.
+        </p>
+      </div>
+
+      <!-- ===================== Sub-row 2: JVP-free routes ===================== -->
+      <div class="subpanel">
+        <h4 class="subpanel-title">A.2 — JVP-free routes: two genuinely different identity constructions</h4>
+        <p>
+          Both eliminate the JVP entirely, but at different points in the training graph. <strong>They are not variants of each other.</strong>
+        </p>
+        <p>
+          <strong><a href="../papers/2512.15657.md">SoFlow (2512.15657)</a> — parameterisation + finite-difference identity.</strong> Parameterise the <em>solution function</em> directly: <code>f_θ(x_t, t, s) = x_t + (s − t)·F_θ</code>. Replace MeanFlow's differential identity with a <strong>Taylor finite-difference solution-consistency loss</strong> — <code>f_θ(x_t, t, s) ≈ f_θ−(x_t + v·(l−t), l, s)</code> for <code>l ∈ (s, t)</code>. CFG baked in at training. <strong>FlashAttention-compatible</strong>: <strong>FID 2.96 @ 1-NFE on identical DiT vs iMF, with −31 % peak memory and +23 % throughput</strong>. Worse FID, cheaper training — the right pick when the backbone needs FlashAttention and the FID gap is acceptable.
+        </p>
+        <p>
+          <strong><a href="../papers/2507.16884.md">SplitMeanFlow (2507.16884)</a> — algebraic identity on student forwards.</strong> Also JVP-free, but by a completely different route. Replace MeanFlow's differential identity with the <strong>Interval Splitting Consistency</strong>:
+        </p>
+        <pre><code>(t − r)·u_θ(z_t, r, t) = (s − r)·u_θ(z_s, r, s) + (t − s)·u_θ(z_t, s, t)</code></pre>
+        <p>
+          — the immediate consequence of additivity of definite integrals applied to <code>u := (1/(t−r)) ∫_r^t v dτ</code>. <strong>Three forward passes through <code>u_θ</code> + simple algebra</strong> build the stop-gradded regression target; <em>no derivatives anywhere on the student</em>. MeanFlow is the <strong><code>s → t</code> limit</strong> (proven, §4.3.1) — SplitMeanFlow is a strict generalisation; Shortcut is the discrete corner <code>s = (r+t)/2</code>. <strong>The only MeanFlow-family paper deployed at production scale on speech audio</strong>: 1–2 NFE inside Seed-TTS's acoustic-diffusion module for ByteDance Doubao TTS, <strong>1-NFE matches the 10-NFE FM + CFG baseline</strong> on Seed-TTS_ICL (identical WER 0.0286, tied SIM/CMOS — a 20× FLOP reduction). Beats DMD at 2 NFE on SFT. Recommended two-stage recipe: FM-teacher warm-start + boundary anchor at fraction <code>p ≥ 0.5</code> of samples with <code>r = t</code>, Interval Splitting Consistency on the remaining <code>1 − p</code>. Caveats: <em>no CPU benchmark, no GFLOPs/sample, no from-scratch numbers</em> (the from-scratch-without-a-teacher path is supported by the loss but not validated in the paper). Seed-TTS operates on <strong>acoustic features</strong>, not raw waveform — sample-space behaviour untested.
+        </p>
+        <p>
+          The diagnostic between the two: <em>SoFlow uses Taylor FD over <code>f_θ</code>'s own forwards (approximate); SplitMeanFlow uses an exact algebraic identity on <code>u_θ</code>'s forwards</em>. SoFlow has an FD step-size <code>ε</code> to tune; SplitMeanFlow has a splitting point <code>s ~ U(r, t)</code> per training step. Different parameterisations (<code>f_θ</code> vs <code>u_θ</code>), different exactness properties, different ports to a <code>u</code>-parameterised audio backbone (SplitMeanFlow is the drop-in; SoFlow requires reparameterising to <code>f_θ</code>).
+        </p>
+      </div>
+
+      <!-- ===================== Sub-row 3: Curriculum routes + audio data points ===================== -->
+      <div class="subpanel">
+        <h4 class="subpanel-title">A.3 — Curriculum routes and audio-applied data points (lower priority)</h4>
+        <p>
+          <strong><a href="../papers/2510.20771.md">AlphaFlow (2510.20771)</a> — keeps the JVP, schedules around it.</strong> Algebraically rewrites MeanFlow's loss as <code>L_MF = L_TFM + L_TC_c</code> (trajectory FM + boundary-condition-free continuous trajectory consistency) and measures <code>cos(∇L_TFM, ∇L_TC_c) ≈ −0.4</code> throughout training — <strong>the two terms are in direct optimisation conflict</strong>. The α-family <code>L_α</code> is a one-parameter interpolant with <strong>α = 1 = FM, α = ½ = Shortcut, α → 0 = MeanFlow</strong> (Theorem 1, the master design parameter of the few-step family). Sigmoid curriculum (Algorithm 2) anneals α from 1 to 0 over 150 k–250 k steps — early training stays on the low-conflict FM manifold, then transitions to MeanFlow. <strong>FID 2.58 @ 1-NFE / 2.15 @ 2-NFE on vanilla DiT-XL/2+</strong> (240+60 epochs, ImageNet-256) — <em>SOTA among φ-free MeanFlow-family from-scratch on vanilla DiT</em>, no architecture tricks, no JVP elimination. <strong>Lower priority for this section because iMF's 1.72 beats it at the same axis</strong>, but the contribution is real on vanilla architectures and the α-curriculum composes orthogonally with any JVP-free identity (SplitMeanFlow at α = 0, SoFlow's FD at α = 0, DDE finite-difference at α = 0 — all untested).
+        </p>
+        <p>
+          <strong><a href="../papers/2510.07979.md">IntMeanFlow (2510.07979)</a> — teacher-trajectory distillation, <em>not</em> from-scratch.</strong> Eliminates the JVP via teacher distillation: a frozen FM teacher runs <code>n</code> Euler steps over <code>[t, r]</code>, the displacement divided by <code>r − t</code> is the regression target. Audio-applied: F5-TTS 3-NFE + O3S matches 32-NFE FM teacher on Seed-TTS test-en (WER 1.60 vs 1.87); CosyVoice2 1-NFE matches teacher WER/SIM-o on token2mel. <strong>1-NFE text2mel is unusable</strong> (WER 7.27 — cleanest published "1-NFE is task-dependent" statement in audio MeanFlow). <strong>Mel-spectrogram operating space, no raw waveform, no CPU benchmark.</strong> Filed here because it shares the output parameterisation, but it is <em>structurally multi-step trajectory distillation</em> and lives on the Section 1 / Section 2 ladder, not this section. <strong>The companion O3S algorithm</strong> (ternary-search non-uniform step placement) composes with any continuous-<code>(t, r)</code> generator at zero training cost — most reusable single contribution.
+        </p>
+        <p>
+          <strong><a href="../papers/2509.23299.md">MeanFlowSE (2509.23299)</a> — speech enhancement.</strong> Vanilla MeanFlow loss (JVP) applied to noisy-speech → clean-speech generation with <strong>WavLM-Large SSL features as conditioning + KALL-E WaveVAE latent as the generative space</strong>. 40.7 M params on 8×4090 — <strong>smallest published MeanFlow at any modality</strong>. RTF 0.013 on 4090. Clean representation-space ablation: replacing SSL-WavLM conditioning with VAE-noisy-latent conditioning gives 2× WER degradation (8.5 → 18.4). Like IntMeanFlow, this is conditional, frozen-representation-piped, no CPU benchmark, no raw-waveform — filed for completeness; not a from-scratch raw-waveform recipe.
+        </p>
+        <p>
+          <strong>Structural read on the three audio applications.</strong> <em>All three audio MeanFlows are conditional and pipe through frozen intermediate representations</em> (mel / acoustic latent / WavLM-SSL + WaveVAE). <strong>Raw-waveform unconditional MeanFlow with a CPU benchmark is the empty cell — three of three.</strong> Any project contribution there has no direct prior art to differentiate against.
+        </p>
+      </div>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>Best 1-NFE quality in the wiki</strong> (iMF: 1.72 FID ImageNet-256 latent; pMF-H/16: 2.22 in pixel-space). Image-side 1-NFE frontier is this family.</li>
+          <li><strong>Single training run.</strong> No pretrain + finetune ladder, no teacher in memory, no distillation pipeline to maintain. The whole point.</li>
+          <li><strong>Multiple JVP escape routes.</strong> If FlashAttention/FSDP is mandatory: SoFlow (FD identity), SplitMeanFlow (algebraic identity, 3-forward, exact), or TVM with the upcoming custom JVP kernel. Six independent answers under the variance-reduction lens.</li>
+          <li><strong>One production deployment in audio.</strong> SplitMeanFlow → Doubao TTS at 1-NFE matching 10-NFE FM teacher at 20× FLOP reduction. The only MeanFlow-family audio production data point.</li>
+          <li><strong>Pixel-space port is direct.</strong> pMF's x-prediction + perceptual loss + patch-size-as-cost-knob translates to raw waveform without architectural reinvention — 256 tokens at any sample-rate × length, MR-STFT + AudioMAE-distance for the perceptual term.</li>
+          <li><strong>Lineage anchor exists.</strong> Shortcut Models gives the simplest possible baseline to validate first — no JVP, no curriculum, no teacher, 16 % training overhead vs. FM.</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>Original MeanFlow is unstable at scale</strong> — the variance-reduction lens (<a href="../papers/2605.09235.md">2605.09235</a>) explains why and measures a <strong>~71× peak per-step loss-variance gap</strong> between stochastic <code>v_cond</code> and deterministic-EMA tangents at DiT-B/4 scale. Naive port to raw waveform (where <code>d ≈ 22 k</code> is larger than ImageNet latent <code>d ≈ 4 k</code>) is expected to be <em>worse</em>, not better.</li>
+          <li><strong>1-NFE saturates or degrades past training NFE.</strong> Most MeanFlow variants are trained primarily for 1-NFE and don't gracefully serve multi-NFE on the same checkpoint. TVM is non-monotonic (different CFG per NFE for headline numbers).</li>
+          <li><strong>RF inversion is at best partial</strong> — the underlying ODE collapses in the <code>r → t</code> limit but the full <code>r ≪ t</code> trajectory is not invertible.</li>
+          <li><strong>Three audio applications, all conditional, all frozen-representation-piped, none CPU-benchmarked, none raw-waveform.</strong> Empty-cell risk: training stability at small audio scale with weak conditioning is the unanswered question.</li>
+          <li><strong>1-NFE is task-dependent in audio</strong> (IntMeanFlow's clearest empirical point): feasible for densely-aligned conditioning (mel, tokens, SSL), unusable for sparse conditioning (text). For unconditional drum-loop generation with CLAP/MATPAC conditioning, the conditioning density is unknown until tested.</li>
+          <li><strong>JVP is a hardware tax</strong> if the backbone is Transformer with FlashAttention — iMF/AlphaFlow/MeanFlow are FlashAttn-incompatible until TVM's kernel is released.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          <strong>JVP is not a hardware blocker on 1-D conv U-Net.</strong> Without attention, <code>torch.func.jvp</code> works without conflict. If the audio backbone is conv-only (CRASH-style), the JVP-elimination motivation collapses — iMF's FID edge over SoFlow / SplitMeanFlow is decisive, and TVM's custom kernel is irrelevant. <em>The JVP-free routes matter most for Transformer-on-waveform.</em>
+        </p>
+        <p>
+          <strong>Predict x₁, not <code>u</code>, on audio.</strong> The <code>v ≈ −x_0</code> silent-region failure mode (Flow2GAN, WaveFM) applies to any velocity-like parameterisation on raw waveform. For Shortcut/SplitMeanFlow on audio, predict <code>x_1</code> and convert via <code>u = (x_t − x_1) / t</code> (or the equivalent for SplitMeanFlow's three forwards). pMF's <code>x</code>-prediction is already on this axis.
+        </p>
+        <p>
+          <strong>Variance-Reduction MF (<a href="../papers/2605.09235.md">2605.09235</a>) Algorithm 1 is the cheapest stability port</strong> — EMA-tangent + FM-anchor at small interior offset <code>δ ∈ [0, 10⁻³]</code>, ~22 % wall-clock overhead. Drops into any MeanFlow training loop, no architecture change. <em>FID-MSE landscape caveat</em>: at converged DiT training the <code>β = 1</code> corner produces <em>worse</em> FID than vanilla — the recipe's value is gradient stability and training-variance reduction, not headline 1-NFE FAD. Whether FAD on waveform behaves like FID on ImageNet (over-penalising bias) or differently is an open empirical question. Composes with everything.
+        </p>
+        <p>
+          <strong>CLAP/MATPAC integration is straightforward</strong> — all MeanFlow variants accept conditioning via FiLM (conv backbone) or in-context tokens (iMF on Transformer). iMF's <code>ω</code>-as-conditioning generalises to any continuous conditioning scalar; the contrastive-D shuffle trick from ARC could plug in if combined with paradigm-B-style adversarial polish in a hybrid recipe.
+        </p>
+        <p>
+          <strong>Highest-EV audio experiments suggested by the wiki (in dependency order):</strong>
+        </p>
+        <ol>
+          <li>Shortcut Models on a CRASH-style 1-D U-Net, x₁-prediction, <code>M ∈ {16, 32}</code> dyadic grid. The simplest baseline — if this converges, the strict generalisations follow.</li>
+          <li>pMF audio port — Transformer-on-waveform with 256-token budget, x-prediction, MR-STFT + AudioMAE-distance for perceptual loss.</li>
+          <li>SplitMeanFlow from-scratch on raw waveform (the empty cell of its paper) — the only audio production deployment in the family, and its from-scratch path is unevaluated.</li>
+          <li>iMF + variance-reduction-MF stability port on the same 1-D conv backbone as (1) — the highest-quality 1-NFE recipe with the cheapest stability addon.</li>
+        </ol>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li><a href="../papers/2410.12557.md">Shortcut Models — 2410.12557</a> (lineage anchor; discrete dyadic <code>d</code>, no JVP)</li>
+          <li><a href="../papers/2512.02012.md">iMF — 2512.02012</a> (1-NFE leader: FID 1.72 on ImageNet-256 latent)</li>
+          <li><a href="../papers/2511.19797.md">TVM — 2511.19797</a> (RMSNorm-everywhere + FlashAttention-JVP kernel + <code>W_2</code> bound)</li>
+          <li><a href="../papers/2601.22158.md">pMF — 2601.22158</a> (pixel-space MF: 3.12 FID @ 33 GFLOPs / 118 M)</li>
+          <li><a href="../papers/2512.15657.md">SoFlow — 2512.15657</a> (JVP-free via Taylor FD on <code>f_θ</code>)</li>
+          <li><a href="../papers/2507.16884.md">SplitMeanFlow — 2507.16884</a> (JVP-free via algebraic interval-splitting; Doubao TTS)</li>
+          <li><a href="../papers/2510.20771.md">AlphaFlow — 2510.20771</a> (α-curriculum; SOTA on vanilla DiT, 2.58 FID)</li>
+          <li><a href="../papers/2510.07979.md">IntMeanFlow — 2510.07979</a> (teacher distillation; F5-TTS / CosyVoice2 mel)</li>
+          <li><a href="../papers/2509.23299.md">MeanFlowSE — 2509.23299</a> (speech enhancement; WavLM + WaveVAE)</li>
+          <li><a href="../papers/2605.09235.md">Variance-Reduction MF — 2605.09235</a> (theoretical lens + Algorithm 1 stability port)</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>Training cost:</strong>
+        Vanilla MeanFlow / iMF: 1 forward + JVP (FlashAttn-incompatible until TVM kernel releases). ·
+        SoFlow: 2 forwards (FlashAttn-compatible). ·
+        SplitMeanFlow: 3 forwards (FlashAttn-compatible, exact identity). ·
+        TVM: 1 + JVP-on-s + 1 EMA + 1 FM forward (FlashAttn-compatible via custom kernel; mandatory RMSNorm-everywhere). ·
+        Variance-Reduction add-on: +22 % wall-clock vs. base. ·
+        <strong>1 network</strong> in VRAM for from-scratch variants (Shortcut, iMF, AlphaFlow, SoFlow, TVM, SplitMeanFlow-from-scratch); +1 EMA for VR-MF / TVM; +1 teacher for IntMeanFlow and SplitMeanFlow-as-deployed.
+        <strong>No CPU benchmark exists for any MeanFlow variant in the wiki — this is the project's headline empty cell.</strong>
+      </div>
+    </article>
+
+    <!-- ============================================================ -->
+    <!-- PANEL B — Pure 1-Step GAN                                    -->
+    <!-- ============================================================ -->
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">B. Pure 1-Step GAN</h3>
+        <p class="panel-tagline">No ODE, no inversion, no graceful multi-NFE — but the only existence proof of &gt;10× RT 1-NFE on CPU.</p>
+      </header>
+      <div class="panel-tags">
+        <span class="tag q-mid">Quality lift: ★★★ (HiFi-GAN V3 MOS 4.05; depends on R1+R2 stability and content type)</span>
+        <span class="tag m-fixed">NFE behaviour: 1-NFE only; no graceful 2/3-NFE refinement, no inversion property</span>
+        <span class="tag s-fast">Training cost: fast (G + D, no teacher, no JVP, no EMA)</span>
+        <span class="tag inv-destroyed">RF inversion: destroyed by definition (no ODE exists)</span>
+      </div>
+      <p class="panel-summary">
+        Train a generator with <strong>only adversarial + reconstruction losses</strong>: no FM/RF pretrain, no diffusion teacher, no consistency objective, no ODE underneath. The generator <em>is</em> the 1-NFE map from noise (and conditioning) to waveform. The wiki's two anchors:
+      </p>
+      <p class="panel-summary">
+        <strong><a href="../papers/2501.05441.md">R3GAN (2501.05441)</a> — the modern minimal recipe.</strong> RpGAN (relativistic pairing) + <strong>both</strong> R1 and R2 zero-centered gradient penalties. RpGAN's loss landscape (Sun et al. 2023) contains no bad mode-dropping local minima; R3GAN's contribution is proving that convergence requires <em>both</em> R1 <em>and</em> R2 (R1 alone provably diverges late in training; R2 closes the fake-side gradient loop). <strong>First standard GAN to hit 1000/1000 modes on Stacked-MNIST</strong> with KL 0.029 — the load-bearing existence proof that the family's classical mode-collapse failure mode is fixed by a two-line loss change. Drops every StyleGAN2 trick under the thesis "tricks are symptoms of an ill-posed loss".
+      </p>
+      <p class="panel-summary">
+        <strong><a href="../papers/2010.05646.md">HiFi-GAN V3 (2010.05646)</a> — the audio existence proof.</strong> 1.46 M params, MOS 4.05, <strong>13.44× real-time on a 2020 i7 CPU at 22 kHz</strong>. Conditional vocoder (mel → wave) — the from-scratch lesson is the training recipe, not the I/O. <strong>MPD + MSD + feature-matching + mel-L1</strong> — every modern audio adversarial paper inherits this stack. No R1, no SAN, no relativistic loss — stability is "good enough on LJSpeech at this scale". <em>This is the only &gt;10× RT CPU 1-NFE audio result anywhere in the wiki across any family.</em>
+      </p>
+      <p class="panel-summary">
+        <strong>The project-specific case for this panel.</strong> For <strong>drum / percussive content</strong> — mostly transients and noise, where harmonic priors are not load-bearing — at <strong>&lt; 2–5 M params</strong> with rich CLAP/MATPAC conditioning, this is the <strong>cheapest possible path to &gt;10× RT CPU 1-NFE generation</strong>. The 1-NFE quality ceiling depends on (a) backbone size, (b) discriminator stack, (c) R1+R2 + RpGAN pairing for stability, and (d) the strength of CLAP/MATPAC as a conditioning surrogate for what diffusion/FM gets "for free" from its time-conditional structure. <em>None of (a)–(d) is theoretically gated</em>; the question is empirical and the existence proof is sitting at MOS 4.05.
+      </p>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>Only family with a &gt;10× RT CPU 1-NFE existence proof on audio</strong> — HiFi-GAN V3 at 13.44× xRT on a 2020 i7. Every other section of this document is below that bar on CPU.</li>
+          <li><strong>1-NFE by construction.</strong> No NFE knob to tune, no consistency identity to enforce, no teacher to distill. The simplest possible deployment story.</li>
+          <li><strong>Tiny parameter budget feasible.</strong> 1–5 M params is enough for percussive content at speech-quality MOS; rich conditioning (CLAP/MATPAC) can substitute for the ODE structure that diffusion/FM provides at larger budgets.</li>
+          <li><strong>Mode-collapse fix is now structural.</strong> R3GAN's R1+R2+RpGAN closes the classical failure mode without StyleGAN-era tricks — well-defined recipe, clean ablations.</li>
+          <li><strong>Cheapest training pipeline.</strong> No EMA teacher, no JVP, no curriculum, no SSL pretrain, no FM pretrain. Two networks (G + D), one stage.</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>No graceful multi-NFE.</strong> Only 1-NFE is meaningful — there is no underlying ODE to integrate further. Single-quality-point deployment.</li>
+          <li><strong>RF inversion destroyed by definition.</strong> No ODE exists. Prompt editing, stem extraction, deterministic round-trip are off the table.</li>
+          <li><strong>Mode coverage requires active instrumentation</strong> — Vendi / Coverage / CCDS / FAD on held-out subsets. Without R3GAN's full R1+R2+RpGAN stack, classical mode collapse risk is real, especially on imbalanced corpora.</li>
+          <li><strong>Less competitive on harmonically-rich content</strong> at small budgets. HiFi-GAN's existence proof is on speech (mel-conditioned); the audio adversarial frontier on unconditional music at larger budgets is held by FM + GAN finetune (Section 1+2), not pure 1-step GAN.</li>
+          <li><strong>No principled multi-NFE upgrade path.</strong> If 1-NFE quality plateaus below the project's bar, the next step is "switch to a different family", not "add steps".</li>
+          <li>Discriminator stack design (MPD / MRD / MS-SB-CQTD) and feature-matching weights remain tuning surfaces; no formal selection criterion.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          <strong>The highest-EV one-line experiment per the wiki: add R2 to MPD/MRD discriminators.</strong> Currently audio uses R1 ad-hoc and not R2; R3GAN's theory predicts stability + diversity gains, no audio paper has tested. Single-line loss addition.
+        </p>
+        <p>
+          <strong>RpGAN pairing for percussive content.</strong> Relativistic loss (D scores the <em>difference</em> between paired real/fake) is the natural fit for conditional generation — pair fakes and reals sharing the same CLAP/MATPAC conditioning. Bradley-Terry preference interpretation, same as ARC's relativistic loss in paradigm B.
+        </p>
+        <p>
+          <strong>Mode-coverage instrumentation is mandatory.</strong> Vendi-score, CCDS, FAD on held-out subsets — without it, mode collapse goes unnoticed until eval. This applies to any pure-adversarial recipe but is especially important for unconditional music where the corpus may already be imbalanced.
+        </p>
+        <p>
+          <strong>CLAP/MATPAC integration.</strong> Conditioning enters G via FiLM (standard); D can take it via an extra logit head or via contrastive-on-shuffled-conditioning (ARC's trick — composes here, untested in pure-1-step-GAN context).
+        </p>
+        <p>
+          <strong>Why this panel is its own line on the design grid, not a fallback.</strong> For the project's "drum loop, 0.1–2 s, &gt;10× RT CPU, 1-NFE" sweet spot, pure 1-step GAN is the <em>cheapest</em> path to "ship something". It is not the highest-quality path on harmonic content, but on percussive content the harmonic priors that diffusion / FM provide are not load-bearing, and the conditioning surrogate (CLAP/MATPAC) covers the structural gap.
+        </p>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li><a href="../papers/2501.05441.md">R3GAN — 2501.05441</a> (RpGAN + R1 + R2, 1000/1000 modes on Stacked-MNIST)</li>
+          <li><a href="../papers/2010.05646.md">HiFi-GAN — 2010.05646</a> (V3: 1.46 M params, MOS 4.05, 13.44× RT CPU at 22 kHz)</li>
+          <li>Adjacent: <a href="../papers/2603.11589.md">ComVo — 2603.11589</a> (STFT-domain CVNN ConvNeXt vocoder, from-scratch GAN, no FM pretrain)</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>Training cost:</strong> small. <strong>2 networks in VRAM</strong> (G + D); no teacher, no EMA, no JVP, no SSL pretrain. Fits a 4090 easily at 1–5 M params with MPD + MRD discriminators (~5–20 M extra for D).
+        <strong>CPU inference:</strong> the headline of this panel — HiFi-GAN V3 at <strong>13.44× xRT on a 2020 i7</strong> at 22 kHz is the wiki's best published CPU 1-NFE number across any family. Smaller backbones with rich conditioning extrapolate higher; larger backbones with harmonic content extrapolate lower.
+      </div>
+    </article>
+
+    <!-- ============================================================ -->
+    <!-- PANEL C — Drifting                                            -->
+    <!-- ============================================================ -->
+    <article class="panel">
+      <header class="panel-header">
+        <h3 class="panel-title">C. Drifting</h3>
+        <p class="panel-tagline">WGF-in-φ-space at training, 1-NFE static generator at inference — and the panel where CLAP / MATPAC are <em>structurally</em> load-bearing.</p>
+      </header>
+      <div class="panel-tags">
+        <span class="tag q-top">Quality lift: ★★★★★ (1-NFE FID 1.61 pixel on ImageNet-256 — best 1-NFE pixel in the wiki)</span>
+        <span class="tag m-saturates">NFE behaviour: 1-NFE primary; inference-time multi-step is not the trained mode (WGF lives at training time)</span>
+        <span class="tag s-mid">Training cost: medium (1× FM-regression for vanilla Drifting; ~2× for W-Flow's Sinkhorn)</span>
+        <span class="tag inv-partial">RF inversion: partial (similar to MF; depends on trained ODE)</span>
+      </div>
+      <p class="panel-summary">
+        The family that says: <em>don't</em> integrate an ODE at inference, <em>do</em> integrate one in distribution space at <em>training</em> time, then compress the entire trajectory into a static 1-NFE generator. The unifying recipe is the <strong><code>V = −∇ δF/δq</code> template</strong>: pick an energy functional <code>F[q]</code> with <code>F = 0 ⇔ q = p</code>, write the Wasserstein gradient flow <code>∂_t q_t = ∇·(q_t V_t)</code>, explicit-Euler-discretise, regress the generator to match the stepwise updates with stop-grad on the target (which is exactly the JKO frozen-field step). Different <code>F</code> give different drifts.
+      </p>
+      <p class="panel-summary">
+        <strong>Headline 1-NFE pixel result:</strong> <a href="../papers/2602.04770.md">Drifting (2602.04770)</a> achieves <strong>1-NFE FID 1.54 latent / 1.61 pixel on ImageNet-256 (L/16)</strong> — the <strong>best 1-NFE pixel FID anywhere in the wiki</strong> when a strong learned feature net φ is available. The catch: <strong>pixel-ImageNet does not converge without the encoder</strong>. The φ is not optional decoration — the kernel mean-shift drift is computed in φ-space and the generator's gradients flow through it.
+      </p>
+      <p class="panel-summary">
+        <strong>This is the panel where the project's CLAP / MATPAC feature net is <em>structurally</em> load-bearing, not just a conditioning input.</strong> Drifting's φ is a learned semantic feature space that defines the kernel mean-shift direction; CLAP and MATPAC are exactly that kind of object on audio. <em>This is the only method in the wiki where "we have a rich learned audio feature net" enters the training algorithm as a first-class operand</em>, not as a side-channel conditioning signal. The natural construction: Drifting (or W-Flow if the Sinkhorn cost is acceptable) with CLAP-or-MATPAC as φ, kernel mean-shift in CLAP/MATPAC embedding space, generator regressed to the JKO step. Untested.
+      </p>
+      <p class="panel-summary">
+        <strong>The W-Flow extension</strong> (<a href="../papers/2605.11755.md">2605.11755</a>) is the current 1-NFE SOTA overall on ImageNet-256 latent at <strong>1.29 FID (XL/2) / 1.35 FID (L/2)</strong> via Sinkhorn-WGF with two-batch self-transport — but on raw audio with CLAP/MATPAC as φ, vanilla Drifting is the simpler first port; W-Flow's Sinkhorn iteration adds ~2× training cost and an extra batch.
+      </p>
+
+      <div class="strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <li><strong>Best 1-NFE pixel FID in the wiki</strong> (1.61 on ImageNet-256) — direct existence proof that the φ-dependent family beats φ-free MeanFlow on pixel-space 1-NFE.</li>
+          <li><strong>CLAP/MATPAC slot in naturally as φ.</strong> The only family where the project's learned semantic feature net enters the training algorithm structurally, not just as a conditioning side channel. Arguably the cleanest audio fit in the wiki for "we already have a strong learned audio embedding".</li>
+          <li><strong>Per-step training cost ≈ 1× FM regression</strong> for vanilla Drifting (and mixed <code>f</code>-divergence Drifting); ~2× for W-Flow's Sinkhorn variant — still cheaper than DMD2's three-network setup, comparable to a one-step head with auxiliary loss.</li>
+          <li><strong>Non-adversarial structural fix for mode collapse</strong> available via mixed <code>f</code>-divergence drift (χ² + reverse-KL combination, <a href="../papers/2603.10592.md">2603.10592</a>) or W-Flow's two-batch self-transport — both are the only non-adversarial mode-coverage fixes in the wiki and both should compose. For multimodal audio corpora (instruments × genres × recording conditions) this is the relevant structural property.</li>
+          <li><strong>Kernel-choice menu maps to known statistics.</strong> Choice of divergence (forward-KL vs reverse-KL vs χ² vs Sinkhorn) is a structural mode-collapse-vs-blur dial at the divergence-design level, complementary to W-Flow's coupling-level fix.</li>
+        </ul>
+      </div>
+
+      <div class="weaknesses">
+        <h4>Weaknesses</h4>
+        <ul>
+          <li><strong>φ-dependent at scale.</strong> The headline 1-NFE numbers all require a strong learned encoder; pixel-ImageNet does not converge without it. For audio, the φ quality determines the ceiling — CLAP and MATPAC are weaker than DINOv2-class image encoders, so the analogous audio result is not free.</li>
+          <li><strong>Untested on audio.</strong> No published Drifting or W-Flow result on raw waveform. The entire panel is structural inference from the image case.</li>
+          <li><strong>WGF only exists at training time.</strong> There is no claim that running multiple inference-time steps of <code>V</code> at higher quality works (unlike EqM). 1-NFE is the trained mode; graceful multi-NFE is not a panel property.</li>
+          <li><strong>Kernel-choice constraints on audio.</strong> The K1–K4 conditions favour Gaussian (uncontroversial on <code>ℝ^d</code>) or vMF on normalised audio-φ spaces; Laplace has Landau-damping advantages on high-frequency-heavy waveforms but violates K4 (differentiability at <code>x = y</code>) and manifests as numerical jitter. Engineering resolutions exist (mollified Laplace, exponential bandwidth annealing on Gaussian, vMF on <code>‖φ‖ = 1</code>) but none are validated on audio φ-spaces.</li>
+          <li><strong>W-Flow inherits Drifting's latent-MAE φ unchanged.</strong> Pixel-space ImageNet was not retested in W-Flow; whether the Sinkhorn upgrade beats vanilla Drifting on raw pixels (or raw waveform) is open.</li>
+          <li><strong>RF inversion is partial</strong> — structurally similar to MF; depends on whether the trained generator's effective ODE stays defined under the JKO compression.</li>
+        </ul>
+      </div>
+
+      <div class="audio-notes">
+        <h4>Audio notes</h4>
+        <p>
+          <strong>φ choice is the headline experiment for this panel</strong> (mirrors Section 2 panel B's FD-loss question, but with stronger structural dependence — Drifting's φ defines the <em>training direction</em>, not just a final-layer metric). Candidates: <strong>MATPAC</strong> (project's own), <strong>CLAP</strong> (text-aligned, 512-d), <strong>MERT</strong> (music SSL, 1024-d, multi-layer), <strong>AudioMAE</strong> (general MAE). A multi-φ ensemble (sum of mean-shifts in multiple embedding spaces) is the natural sweep — additive on the velocity field, no extra coupling computation.
+        </p>
+        <p>
+          <strong>Kernel choice on audio φ-space:</strong> if φ has bounded support or is normalised to the unit sphere (CLAP and MATPAC typically are), <strong>vMF kernel</strong> <code>exp(κ x^T y)</code> is K1–K4-legal on the sphere without boundary, sidesteps the Laplace K4 violation, and has the Landau-damping benefit. This is the resolution the 2603.10592 paper itself flags for JEPA-style encoders — directly applicable to CLAP/MATPAC.
+        </p>
+        <p>
+          <strong>Mixed reverse-KL + χ² drift (<a href="../papers/2603.10592.md">2603.10592</a> Eq. 9) is the cheapest structural mode-coverage fix</strong> — one extra kernel sum + one ratio per particle, no Sinkhorn iteration. Validated only on 2-D toys; the imbalanced-corpus audio test is the open empirical question. Composes with W-Flow's two-batch self-transport.
+        </p>
+        <p>
+          <strong>Audio length / dimensionality.</strong> Drifting's per-step cost is <code>O(B²·d_φ)</code> in batch size and feature-net dimension, not in waveform length — so the family scales cleanly with 0.1–10 s waveforms as long as the φ encoder handles them. CLAP and MATPAC do.
+        </p>
+        <p>
+          <strong>Composable additions:</strong> <strong>signature kernel</strong> as <code>F</code> in the WGF template (<code>MMD_{K^Sig}</code>) — autodiff through <code>sigkernel</code> gives the drift; new entry in the Drifting family natively over paths, distinct from Sinkhorn-WGF's metric geometry. Untested. <strong>FD-loss post-train on top of a Drifting base</strong> — the analogue of "iMF base + FD-loss polish" from Section 2, untested for Drifting → FD-loss specifically.
+        </p>
+        <p>
+          <strong>Highest-EV audio experiment per the wiki:</strong> vanilla Drifting with <strong>CLAP or MATPAC as φ</strong>, vMF kernel on the normalised embedding, generator on a 1-D conv U-Net or pMF-style 1-D Transformer. If the 1-NFE pixel-image existence proof transfers, this is the cleanest audio fit in the wiki for the project's existing semantic feature stack.
+        </p>
+      </div>
+
+      <div class="refs">
+        <h4>References</h4>
+        <ul>
+          <li><a href="../papers/2602.04770.md">Drifting — 2602.04770</a> (1-NFE FID 1.61 pixel ImageNet-256; original WGF-then-compress)</li>
+          <li><a href="../papers/2605.11755.md">W-Flow — 2605.11755</a> (Sinkhorn-WGF + two-batch self-transport; 1.29 FID XL/2 SOTA)</li>
+          <li><a href="../papers/2603.09936.md">Spectral / Landau-damping — 2603.09936</a> (<code>V = −∇ δF/δq</code> template; kernel-choice analysis)</li>
+          <li><a href="../papers/2603.10592.md">f-divergence Drifting — 2603.10592</a> (K1–K4 conditions; mixed reverse-KL + χ² drift)</li>
+          <li><a href="../papers/2603.12366.md">Sinkhorn-Drifting — 2603.12366</a> (theory companion: <code>S_τ</code> closes identifiability gap)</li>
+        </ul>
+      </div>
+
+      <div class="cpu-estimate">
+        <strong>Training cost:</strong> vanilla Drifting / mixed <code>f</code>-divergence Drifting: 1× FM regression per step + one kernel-sum-per-particle in φ-space. W-Flow: ~2× per step (extra forward + two Sinkhorn-Knopp iterations at L=10). <strong>2 networks in VRAM</strong> (G + frozen φ); no teacher, no EMA, no JVP, no D. Comparable to FD-loss footprint from Section 2.
+        <strong>CPU inference:</strong> identical to whichever backbone G uses — Drifting / W-Flow are training-time methods that produce a static 1-NFE generator, so CPU cost is exactly G's per-step cost. <em>No CPU benchmark in the wiki for Drifting at any modality.</em>
+      </div>
+    </article>
+
+  </div>
+</section>
+<section class="section" id="section-4">
+  <header class="section-header-wrapper">
+    <h2 class="section-header"><span class="section-num">04</span> Backbone Medium</h2>
+    <p class="section-intro">
+      Backbone medium — the network's <em>operating domain</em> (raw waveform / STFT bins / patch tokens) and the architectural family running on it — is the dominant CPU-cost lever in this project. The load-bearing axis is <strong>operating sequence length</strong>: sample-rate backbones (~24 000 tokens/s @ 24 kHz) are sub-real-time on CPU regardless of params or NFE (<a href="../papers/2503.16689.md">WaveFM</a> 0.64× xRT @ 19.5 M / 1-NFE; <a href="../papers/2403.05010.md">RFWave</a> 0.37×; PeriodWave-Turbo 0.12× @ 4-NFE / 70 M), whereas STFT hop-rate backbones (~94 frames/s) are the only proven &gt;RT CPU recipe (<a href="../papers/2512.23278.md">Flow2GAN</a> 4.85× @ 78.9 M / 1-NFE; Vocos 387× @ 13.5 M / 1-NFE with reduced quality). The single exception at sample rate is the &lt;2 M GAN-style stack (<a href="../papers/2010.05646.md">HiFi-GAN V3</a> 13.44× RT on a 2020 i7 at 1.46 M / MOS 4.05) — an existence proof that ports to CLAP-shaped rich conditioning but is untested with diffusion/FM-grade training. The transformer-on-patched family has the strongest 1-NFE pixel cost-quality data (<a href="../papers/2601.22158.md">pMF-B/16</a> 33 GFLOPs / 3.12 FID) but <strong>zero audio evidence</strong> — it is the biggest untested cell. Pick this layer wrong and no method (Section 3), training schedule, or post-training trick recovers the CPU budget.
+    </p>
+  </header>
+
+  <div class="panels">
+
+    <!-- ============================================================ -->
+    <!-- PANEL A: Conv on Raw Waveform                                  -->
+    <!-- ============================================================ -->
+    <article class="panel" id="panel-4A">
+      <header class="panel-header">
+        <h3 class="panel-title">A. Conv on Raw Waveform <span class="panel-sub">— sequence = T<sub>audio</sub></span></h3>
+        <div class="panel-tags">
+          <span class="tag seq-samplerate">seq: sample-rate (~24 000/s @ 24 kHz)</span>
+          <span class="tag s-slow">CPU: sub-RT (except tiny-GAN sub-row A1)</span>
+          <span class="tag m-graceful">domain fit: percussive / mel-vocoder</span>
+        </div>
+      </header>
+      <p class="panel-summary">
+        Local 1-D convolutions on the raw waveform. The family that almost every audio diffusion / FM paper defaults to — and the family that <strong>cannot beat real-time on CPU above ~2 M params, regardless of NFE</strong>. The 1.46 M HiFi-GAN V3 GAN-stack is the lone counter-example, surviving on 22 kHz speech vocoding with multi-receptive-field ResBlocks. Open question for the project: does a CRASH-shape unconditional U-Net or a HiFi-GAN-MRF asymmetric mel-vocoder cousin shrink down to the &lt;2 M envelope while keeping 1-NFE FAD competitive?
+      </p>
+
+      <!-- A1: Tiny conv stack -->
+      <section class="subpanel" id="panel-4A1">
+        <header class="subpanel-header">
+          <h4>A1 &nbsp;Tiny conv stack &lt;2 M (HiFi-GAN-V3 analogue)</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-fast">CPU xRT 13.44 (i7-2020, 22 kHz, 1.46 M, mel-cond)</span>
+            <span class="tag q-low">params: &lt;2 M</span>
+            <span class="tag m-fixed">audio fit: drum / percussive + rich-but-not-mel-frame-rate conditioning</span>
+            <span class="tag">1-NFE GAN existence proof</span>
+          </div>
+        </header>
+        <p>
+          <strong>Existence proof:</strong> <a href="../papers/2010.05646.md">HiFi-GAN V3 (2010.05646)</a> at <strong>1.46 M params, 13.44× RT on a 2020 Intel i7 laptop CPU, MOS 4.05 @ 22 kHz LJSpeech</strong> as a mel-vocoder. V2 at 0.92 M / MOS 4.23 / 9.74× RT and V1 at 13.9 M / MOS 4.36 / 1.43× RT bracket the cost-quality curve. The shape is straightforward: stack of upsampling transposed-conv blocks interleaved with MRF (multi-receptive-field) ResBlocks (kernel-list <code>[3, 7, 11]</code>, dilation-list <code>[1, 3, 5]</code>), trained from scratch as a GAN — no diffusion, no FM, no consistency.
+        </p>
+        <p>
+          <strong>The user's framing:</strong> CLAP / MATPAC embeddings are rich-but-low-rate conditioning signals — they sit closer to a fixed-vector class label than to a frame-rate mel spectrogram. The structural argument is that a small-RF conv stack with <em>rich but low-bitrate</em> conditioning is exactly the regime HiFi-GAN V3 occupies (mel @ 86 frames/s ≈ low-rate vs the 22 kHz output). Whether this generalises to CLAP-shape (1 vector per clip) or MATPAC-shape (a few vectors per clip) conditioning is the open empirical question. Expected best fit: <strong>drum / percussive content</strong> where harmonic priors aren't load-bearing and onset structure dominates.
+        </p>
+        <p>
+          <strong>Not a dimension-preserving backbone — GAN-only.</strong> The architecture is pure upsampling (low-rate input → 22 kHz waveform), so input dim ≠ output dim. It <em>cannot</em> be used as the velocity / score network in a diffusion / FM / consistency pathway, which all require input shape = output shape. The only viable training recipe is 1-shot GAN, with low-rate input (CLAP / MATPAC + low-rate noise) → waveform output. To use the same MRF ResBlock geometry inside a denoiser, prepend a mirror downsampling encoder — at which point you have <a href="#panel-4A3">A3</a>.
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> only proven &gt;10× CPU xRT at audio sample rate; tiny memory; well-understood ResBlock geometry; trains stably on small data; native 1-NFE.</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> hardware datapoint is a 2020 laptop i7 (not the Xeon-batch-16 used by Flow2GAN's Tab. 7), so a like-for-like comparison is missing; published number is mel-vocoding, not unconditional generation or CLAP-class conditioning; quality MOS 4.05 is below V1 / Flow2GAN / Vocos descendants on speech (and untested on music).</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> percussive one-shots, kick / snare drum library generation, mel-vocoding of low-bandwidth audio. <em>Unfit:</em> long sustained harmonic tones where MRF kernel-receptive-field (max dilated K=11) may be too local; high-bandwidth music with broadband content.</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (laptop, batch 1, 1 s @ 22 kHz):</strong> extrapolating from the 1.46 M / 13.44× xRT point: a 1–2 M 1-NFE conv stack should hold &gt;5× xRT on a recent laptop CPU. <em>Caveat:</em> CLAP / MATPAC encoder cost is <em>not</em> in this number — those run once per clip and stay outside the inner loop, but the encoder itself may need to be measured separately.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2010.05646.md">HiFi-GAN (2010.05646)</a>.</div>
+      </section>
+
+      <!-- A2: CRASH-σ-FiLM symmetric U-Net -->
+      <section class="subpanel" id="panel-4A2">
+        <header class="subpanel-header">
+          <h4>A2 &nbsp;CRASH σ-FiLM symmetric 1-D U-Net (~5–20 M, empty CPU cell)</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-slow">CPU xRT: NOT PUBLISHED — projected sub-RT by family analogy</span>
+            <span class="tag q-mid">params: ~5–20 M (CRASH params not reported)</span>
+            <span class="tag m-fixed">audio fit: unconditional drums @ 44.1 kHz (CRASH's actual test bed)</span>
+            <span class="tag">σ-FiLM at every D/U block</span>
+          </div>
+        </header>
+        <p>
+          <a href="../papers/2106.07431.md">CRASH (2106.07431)</a> is the canonical unconditional 1-D σ-FiLM symmetric U-Net for music. Geometry: input conv (kernel-5) → symmetric channel ladder 128 / 128 / 256 / 512 / 512 on both encoder and decoder, aggressive cumulative downsample (strides 2-2-3-5-5 = <strong>300× on 0.48 s drums</strong>, so the bottleneck sees ~70 samples), σ-FiLM injection at every D/U block from a single RFF(32) → 512-d noise-level embedding, dilated convs (1, 2, 4, 8) per block, skip-concat from encoder to decoder.
+        </p>
+        <p>
+          <strong>The empty cell.</strong> CRASH publishes only RTX-3090 + batch-180 GPU numbers (DDIM-50 ~2.3× RT, batched). <em>No CPU benchmark exists anywhere in the family</em> — neither in CRASH's own paper nor in any wiki source. Closing this cell with a CPU number on a 5–20 M CRASH-class model on a recent laptop CPU would essentially finalise the architecture-vs-CPU map for the project.
+        </p>
+        <p>
+          <strong>Extrapolation:</strong> <a href="../papers/2503.16689.md">WaveFM</a> at 19.5 M / 1-NFE / 24 kHz hits <strong>0.64× xRT on Xeon batch 16</strong>; <a href="../papers/2403.05010.md">RFWave</a> at 18.1 M / 10-NFE / 22.05 kHz hits 0.37× xRT (sample-rate backbone bites despite the freq-axis subband batching trick that should help). A symmetric CRASH-shape U-Net at 44.1 kHz on 0.48 s drums has roughly 2× the per-sample work of WaveFM at 24 kHz / 1 s (sample rate up, clip down), so <strong>expect ~0.3–0.7× xRT on Xeon batch 16 even at 1-NFE</strong>. Batch=1 laptop CPU likely much worse.
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> only unconditional 1-D U-Net design with a published audio result; canonical σ-FiLM(σ) injection scheme; SDE / ODE / DDIM all share the same trained network; cosine σ schedule × DDIM-50 is well-characterised (FAD 1.56); FiLM(σ) sidesteps σ(t) learning.</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> symmetric channel ladder is wasteful in the EPG / WaveFM "grow the decoder" sense; sample-rate backbone locks in sub-RT CPU regardless of NFE; original CRASH benchmark is 400-NFE SDE (3.5 h for 27 000 × 0.48 s on a 3090 batch-180); fixed 0.48 s clip length; no published params count.</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> what the paper actually tested — short unconditional drum hits at 44.1 kHz. The 300× downsample is fine for percussive transients but a strong prior; likely limits sustained harmonic content.</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (laptop, batch 1, 1 s @ 44.1 kHz):</strong> sub-RT by family analogy; needs to be measured.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2106.07431.md">CRASH (2106.07431)</a>.</div>
+      </section>
+
+      <!-- A3: HiFi-GAN-MRF asymmetric (WaveFM) -->
+      <section class="subpanel" id="panel-4A3">
+        <header class="subpanel-header">
+          <h4>A3 &nbsp;HiFi-GAN-MRF asymmetric 1-D U-Net (WaveFM, 19.5 M)</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-slow">CPU xRT 0.64 @ 1-NFE (Xeon Platinum 8457C, batch 16, 1 s @ 24 kHz)</span>
+            <span class="tag q-mid">params: 19.5 M</span>
+            <span class="tag m-fixed">audio fit: mel-conditional vocoder @ 24 kHz</span>
+            <span class="tag">FM + CM, snake-beta, additive sinusoidal-t</span>
+          </div>
+        </header>
+        <p>
+          <a href="../papers/2503.16689.md">WaveFM (2503.16689)</a> is the first sample-rate-waveform U-Net with a published CPU number. Geometry: <strong>asymmetric</strong> — thin downsampling encoder (4×1 ResBlock matrices, kernel-3) acts as a mel-conditioning controller, <strong>most capacity on the upsampling side</strong> (3×3 MRF ResBlock matrices, kernel-list <code>[3, 7, 11]</code>, dilation-list <code>[1, 3, 5]</code>). Channels 32 / 64 / 128 / 256 / 512 (asymmetric: most params on the upsampling side). <strong>1024× cumulative upsampling</strong> (strides 8-8-4-2-2) from the 100-mel-band frame-rate up to 24 kHz waveform. Snake-beta activations from BigVGAN for periodic inductive bias, sinusoidal-time embedding of <code>100·t</code> additively injected into hidden layers at each downsampling resolution.
+        </p>
+        <p>
+          <strong>Training recipe:</strong> reparameterized FM (predict <code>x<sub>1</sub></code> rather than <code>v</code>, because snake-beta activations + raw-velocity target are incompatible — the random derivative noise destabilises learned periodic patterns) + tailored consistency distillation against an EMA teacher (25 k CM steps after 1 M FM pretrain steps). PESQ 3.51 / SMOS 4.11 on LibriTTS dev.
+        </p>
+        <p>
+          <strong>CPU verdict (the headline):</strong> 0.64× xRT at 1-NFE on Xeon Platinum 8457C batch 16. <em>Sub-real-time</em> — the same regime as RFWave (0.37×) and PeriodWave-Turbo (0.12× @ 4-NFE). The 4× parameter advantage WaveFM has over <a href="../papers/2512.23278.md">Flow2GAN's</a> 78.9 M <strong>cannot overcome the ~256× sequence-length disadvantage</strong> (sample-rate 24 000/s vs hop-rate 94/s). Same NFE, same `x<sub>1</sub>`-prediction, same family — backbone medium dominates by ~8× on CPU.
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> first CPU-benchmarked sample-rate FM+CM recipe; HiFi-GAN-MRF ResBlocks port cleanly; asymmetric enc/dec generalises EPG's "grow the decoder" lesson to waveform; snake-beta gives small but consistent quality gain (−0.08 SMOS without it); reparameterized FM is the right target for periodic-activation backbones.</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> sub-RT on CPU — locked in by the sample-rate backbone; mel-conditional only (no unconditional ablation); 1024× upsampling chain quantizes input length; 19.5 M is the floor of what this geometry needs to work, not a free knob.</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> mel-conditional vocoding @ 24 kHz mono speech (the only tested regime). Ported to music would need the mel-conditioning replaced or augmented; CLAP-shape low-rate conditioning is not the regime this was designed for (mel @ frame rate is a thick controller signal, CLAP is a single vector).</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (laptop, batch 1, 1 s @ 24 kHz):</strong> expect substantially worse than 0.64× — batch=1 single-sample on a laptop CPU is the harder benchmark, and Xeon-batch-16 is the published number. Likely &lt;0.5× xRT on a recent MacBook M-series; probably ~0.2–0.3× on an i7 laptop CPU.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2503.16689.md">WaveFM (2503.16689)</a>; <a href="../papers/2010.05646.md">HiFi-GAN (2010.05646)</a> for the MRF ResBlock origin; <a href="../papers/2512.23278.md">Flow2GAN (2512.23278)</a> Tab. 7 for the cross-architecture CPU re-benchmark.</div>
+      </section>
+    </article>
+
+    <!-- ============================================================ -->
+    <!-- PANEL B: Conv on STFT                                          -->
+    <!-- ============================================================ -->
+    <article class="panel" id="panel-4B">
+      <header class="panel-header">
+        <h3 class="panel-title">B. Conv on STFT <span class="panel-sub">— sequence = T<sub>audio</sub> / hop ≈ 94 frames/s @ 24 kHz</span></h3>
+        <div class="panel-tags">
+          <span class="tag seq-hoprate">seq: hop-rate (~94 frames/s @ 24 kHz hop 256)</span>
+          <span class="tag s-fast">CPU: &gt;RT proven (Flow2GAN 4.85, Vocos 387)</span>
+          <span class="tag m-graceful">domain fit: mel-vocoder; unconditional untested</span>
+        </div>
+      </header>
+      <p class="panel-summary">
+        STFT → conv stack → iSTFT. <strong>The only family with a published &gt;real-time CPU benchmark in the wiki.</strong> Both STFT and iSTFT are differentiable; the network is trained end-to-end on the waveform output. Three orthogonal sub-variant axes exist (subband batching on the frequency axis / multi-resolution branches / complex-valued layers throughout), and <strong>none have been tested in combination</strong>. The single biggest missing measurement is <a href="../papers/2603.11589.md">ComVo's</a> CPU xRT — the complex-valued ConvNeXt that wins quality vs Vocos/HiFi-GAN/BigVGAN on every objective metric but reports GPU-only numbers (5.7× slower than Vocos on GPU at matched params; CPU likely worse due to less-optimised complex BLAS).
+      </p>
+
+      <!-- B1: Vocos single-branch -->
+      <section class="subpanel" id="panel-4B1">
+        <header class="subpanel-header">
+          <h4>B1 &nbsp;Single-branch ConvNeXt + iSTFT (Vocos, 13.5 M)</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-fast">CPU xRT 387.6 (Xeon Platinum 8457C, batch 16, 1 s @ 24 kHz)</span>
+            <span class="tag q-mid">params: 13.5 M</span>
+            <span class="tag m-fixed">audio fit: mel-vocoder; quality below Flow2GAN/ComVo</span>
+            <span class="tag">1-NFE structural</span>
+          </div>
+        </header>
+        <p>
+          Vocos (Siuzdak 2023; ingested via <a href="../papers/2512.23278.md">Flow2GAN's</a> Tab. 7 re-benchmark) is the minimum-viable STFT-domain backbone. Single STFT at hop 256 (~94 frames/s @ 24 kHz) → ConvNeXt stack → iSTFT. 13.5 M total parameters. Trained as a 1-shot regressor against waveform target (no NFE knob).
+        </p>
+        <p>
+          <strong>CPU verdict:</strong> <strong>387.6× real-time</strong> at batch 16 on Xeon Platinum 8457C — the fastest backbone in the wiki by an order of magnitude over Flow2GAN's 4.85×. <strong>Caveat:</strong> PESQ 3.62 / MOS 4.10, well below Flow2GAN's PESQ 4.19 / 4.44 / 4.48 (1 / 2 / 4 NFE) and ComVo's matched-memory wins on LibriTTS. Vocos is the cheap-but-coarse anchor of the STFT-conv family.
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> fastest backbone anywhere; ConvNeXt depthwise+pointwise structure is CPU-friendly; iSTFT is essentially free; native 1-NFE; small enough to fit on any device.</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> quality ceiling lower than multi-branch / complex-valued cousins; mel-conditional only; no demonstrated unconditional or music-domain port; real-imag concatenated-along-channels real Conv leaves complex-algebra structure for the network to discover.</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> mel-vocoding @ 24 kHz speech (the tested regime). At 387× xRT there is massive CPU headroom — could absorb 4-NFE multi-step at &gt;90× xRT, or absorb a 5× parameter increase and still hold &gt;75× xRT. The right slot for "ship the cheap one, polish with another stage".</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (laptop, batch 1, 1 s @ 24 kHz):</strong> Xeon batch-16 is 387×; the batch-1 laptop-CPU number is unpublished but the headroom is so large the ratio almost doesn't matter — even a 50× drop leaves ~7× xRT.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2512.23278.md">Flow2GAN (2512.23278)</a> Tab. 7 for the published CPU number.</div>
+      </section>
+
+      <!-- B2: RFWave subband batching -->
+      <section class="subpanel" id="panel-4B2">
+        <header class="subpanel-header">
+          <h4>B2 &nbsp;Subband-batched on freq axis (RFWave, 18.1 M)</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-slow">CPU xRT 0.37 @ 10 NFE (Xeon Platinum 8457C, batch 16)</span>
+            <span class="tag q-mid">params: 18.1 M</span>
+            <span class="tag m-graceful">audio fit: mel-vocoder; 1.5 s @ 22.05 kHz</span>
+            <span class="tag">freq-axis subband batching trick</span>
+          </div>
+        </header>
+        <p>
+          <a href="../papers/2403.05010.md">RFWave (2403.05010)</a> applies a clever batching trick on top of a hop-rate ConvNeXtV2 backbone: <strong>slice the complex STFT into 8 frequency subbands with small overlaps, stack into the batch dimension, one shared backbone with AdaLN(subband-index) processes all 8 concurrently, an overlap loss enforces seam consistency.</strong> 8 blocks × width 512 × FFN 1536 × depthwise k=7. 18.1 M @ 22.05 kHz, 128 frames (~1.5 s). At inference the 8 subbands are decoded in parallel and independently — no autoregressive low→high cascade, errors don't propagate up frequency.
+        </p>
+        <p>
+          <strong>CPU verdict:</strong> <strong>0.37× xRT — sub-real-time</strong>, despite the parameter count being modest and the per-step cost being low. The culprit is the <strong>10-NFE rectified-flow inference</strong>: per-step is fast but the total NFE multiplier drags. Per-step xRT extrapolates to ~3.7× — comparable to Flow2GAN-per-step — but RFWave's training recipe doesn't get the NFE down. <em>This is the sharpest demonstration in the wiki that backbone speed alone isn't sufficient; method (Section 3) and backbone medium have to compose.</em>
+        </p>
+        <p>
+          <strong>The freq-axis batching trick.</strong> Effectively free architecturally — single shared backbone with conditioning AdaLN(subband-index) and an overlap-region loss; 8× parallel decode at inference. Works whenever the spectrogram is wide (high SR, mono or stereo) and the time axis is short. <em>Composes with Flow2GAN's multi-resolution and with ComVo's complex-valued layers — none of the three combinations published.</em>
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> the subband-batching trick adds expressive power on the frequency axis at near-zero compute cost; independent parallel decode at inference; conv stack stays at hop rate; ConvNeXtV2 is CPU-friendly; small param count (18.1 M).</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> 10-NFE training is what kills the CPU benchmark — the per-step cost is fine, the step count is wrong; AdaLN(subband-index) is an extra training axis; overlap loss adds bookkeeping.</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> mel-vocoding @ 22.05 / 24 / 44.1 kHz speech; equal-straightness Euler step allocation gives a free PESQ jump (4.21 → 4.28); does <em>not</em> port the way Vocos does to lower NFE without re-training. The 1-NFE port via fastforward FM / consistency is the obvious next step but unpublished.</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (laptop, batch 1, 1 s @ 22.05 kHz):</strong> 0.37× / 10-NFE → per-step ~3.7×; if dropped to 1-NFE via fastforward FM or CM (Section 3) this becomes the second-fastest hop-rate option after Vocos. Unpublished.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2403.05010.md">RFWave (2403.05010)</a>; <a href="../papers/2512.23278.md">Flow2GAN</a> Tab. 7 for the CPU number.</div>
+      </section>
+
+      <!-- B3: Flow2GAN multi-resolution -->
+      <section class="subpanel" id="panel-4B3">
+        <header class="subpanel-header">
+          <h4>B3 &nbsp;Multi-branch ConvNeXt at different (N<sub>FFT</sub>, hop) — Flow2GAN, 78.9 M</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-fast">CPU xRT 4.85 @ 1-NFE / 2.46 @ 2-NFE / 1.35 @ 4-NFE (Xeon, batch 16, 1 s @ 24 kHz)</span>
+            <span class="tag q-high">params: 78.9 M</span>
+            <span class="tag m-fixed">audio fit: mel/codec-vocoder @ 24 kHz (the tested regime)</span>
+            <span class="tag">only proven &gt;RT 1-NFE CPU recipe in wiki</span>
+          </div>
+        </header>
+        <p>
+          <a href="../papers/2512.23278.md">Flow2GAN (2512.23278)</a> is the load-bearing CPU result for this project. Three parallel ConvNeXt stacks at hops <strong>{256, 128, 64}</strong> (i.e. NFFT/hop pairs <strong>{(512, 256), (256, 128), (128, 64)}</strong> respectively — low-time-rate / high-freq-detail, balanced, and high-time-rate / low-freq-detail), each followed by its own iSTFT, with outputs summed in the waveform domain. Embedding dims 768 / 512 / 384 (larger width on lower-frame-rate branches since those carry more spectral content per frame). 8 ConvNeXt layers per branch. <strong>Shared ConvNeXt conditioning encoder (4×512)</strong> run once over the mel / codec input and <em>reused across all FM sampling steps</em> — per-step cost = only the per-branch generative ConvNeXt.
+        </p>
+        <p>
+          <strong>CPU verdict (the headline):</strong> <strong>4.85× xRT at 1-NFE on Xeon Platinum 8457C batch 16, 24 kHz, 1 s</strong>. 2.46× @ 2-NFE, 1.35× @ 4-NFE. PESQ 4.19 / 4.44 / 4.48 — and MOS 4.58 at 4-NFE. <strong>This is the only proven &gt;real-time CPU recipe at audio sample rate in the wiki, regardless of which Section-3 method runs on it.</strong> The CPU advantage over WaveFM at 19.5 M / 1-NFE is ~8× despite Flow2GAN having 4× more parameters — backbone medium dominates by an order of magnitude.
+        </p>
+        <p>
+          <strong>Per-step CPU cost scales ~linearly with NFE</strong> (xRT halves with each doubling of N): ≈ 0.2 s audio / CPU-second / step at 78.9 M params @ 24 kHz / batch 16. Direct budget calculation: at 1-NFE / batch 1 / laptop CPU, expect substantial degradation from Xeon batch 16, but the headroom of 4.85× should leave usable margin.
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> only proven &gt;RT 1-NFE CPU result at audio sample rate; multi-resolution branches add expressive power at fixed params (Tab. 6: 3-branch 78.9 M slightly beats single-branch-doubled-depth 79.9 M); shared cond-encoder reuse makes multi-step affordable; per-step xRT scales linearly with NFE; FM-pretrain + GAN-finetune training recipe.</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> 3× the STFT/iSTFT overhead vs single-branch; 78.9 M is moderately heavy for CPU; mel/codec-conditional only (untested unconditional); branches use real-channel-concat for complex spectrograms — complex-algebra structure not baked in.</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> mel/codec-vocoding @ 24 kHz mono speech (the published regime). The right shape for music-domain unconditional generation is the open question for this project — does the multi-resolution split survive without mel-conditioning to lock phase in? STFT-frame architectures are <em>conditional</em> vocoders in every published case, and ComVo's CVNN-vs-RVNN gap may widen in the unconditional regime.</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (laptop, batch 1, 1 s @ 24 kHz):</strong> Xeon batch-16 is 4.85× @ 1-NFE; a recent MacBook M-series at batch 1 plausibly holds &gt;1.5–3× xRT at 1-NFE. <em>The number we actually need but lack.</em> Reproducing Flow2GAN's CPU xRT on our hardware (laptop, batch=1, both batch=1 and batch=16) is in the open-questions list for the project.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2512.23278.md">Flow2GAN (2512.23278)</a> — the primary source. CPU xRT in Tab. 7, multi-branch ablation in Tab. 6.</div>
+      </section>
+
+      <!-- B4: ComVo complex-valued -->
+      <section class="subpanel" id="panel-4B4">
+        <header class="subpanel-header">
+          <h4>B4 &nbsp;Complex-valued layers throughout (ComVo, 13.28 M)</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-slow">CPU xRT: NOT PUBLISHED — the highest-leverage missing measurement</span>
+            <span class="tag q-mid">params: 13.28 M (memory 101 MB ≈ 2× RVNN)</span>
+            <span class="tag m-graceful">audio fit: mel-vocoder; wins quality vs Vocos/HiFi-GAN/BigVGAN on LibriTTS</span>
+            <span class="tag">complex Conv + complex LayerNorm + complex GELU + cMRD + phase quantization</span>
+          </div>
+        </header>
+        <p>
+          <a href="../papers/2603.11589.md">ComVo (2603.11589)</a> takes the third orthogonal axis inside the STFT-domain ConvNeXt family: <strong>every layer genuinely complex-valued.</strong> Single STFT branch (hop 256, FFT 1024, Hann window, max freq 12 kHz). Complex Conv1d / Conv2d (one real filter <code>h = a + ib</code> applied as <code>z' = (x·a − y·b) + i(x·b + y·a)</code>), complex LayerNorm with <strong>full 2×2 real/imag covariance decorrelation</strong>, complex split-GELU, complex pointwise convs. <strong>cMRD complex multi-resolution discriminator</strong> (hinge applied independently to real and imag of the complex output) replaces the standard real-valued MRD; MPD stays real because its input is the time-domain waveform. <strong>Phase quantization layer</strong> after the initial complex Conv1d: <code>z<sub>q</sub> = |z| · e<sup>i·(2π/N<sub>q</sub>)·round(N<sub>q</sub>θ/2π)</sup></code> with <code>N<sub>q</sub> = 128</code> and STE on the round, acting as a phase-angle regulariser. 13.28 M total.
+        </p>
+        <p>
+          <strong>Quality verdict:</strong> wins objective metrics on LibriTTS vs Vocos, HiFi-GAN, BigVGAN. Matched-memory ablation (Tab. 10): <code>G<sub>C</sub> D<sub>R</sub></code> at 13.28 M / 101 MB beats <code>G<sub>R</sub> D<sub>R</sub> 2×</code> at 27.05 M / 103 MB on every objective metric — <strong>the win is structural (complex algebra baked in), not capacity (doubled per-param memory).</strong> Grad-CAM diagnostic: real-valued MRD attention is diffuse; cMRD attention concentrates on harmonics and onsets across all three sub-discriminators.
+        </p>
+        <p>
+          <strong>CPU verdict:</strong> <strong>NOT REPORTED ANYWHERE.</strong> GPU number is 819× xRT at batch 1 vs Vocos 4658× at matched params — <strong>5.7× slower on GPU.</strong> Complex-valued kernels are less optimised in CPU BLAS than float32, so the CPU gap likely widens — plausibly 10–20× slower than Vocos on CPU, which would put ComVo at ~25–40× xRT (still well above real-time). <em>Until measured, ComVo is an architectural lesson, not a CPU-deployment recipe.</em> This is the single biggest missing measurement in the STFT-domain family.
+        </p>
+        <p>
+          <strong>Cost:</strong> ~2× per-parameter memory (every weight stores a (real, imag) pair, so 13.5 M params = 101 MB not 51.6 MB). Block-matrix CVNN implementation (paper §4.4) cuts training time 25 % and backward-graph nodes 55 % with no quality change. From-scratch GAN — no diffusion / FM / consistency post-training tested, which is paper §7's explicit future-work flag.
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> structurally bakes in complex algebra (no learning the real-imag coupling); cMRD discriminator gives qualitatively different harmonic-localised attention; phase quantization is a one-line architecture-agnostic layer with small but real gain (UTMOS +0.026, PESQ +0.05 at N<sub>q</sub>=128); matched-memory ablation isolates the structural win from the capacity confound; wins quality on every objective metric against Vocos/HiFi-GAN/BigVGAN.</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> <em>no CPU number anywhere in the paper</em>; 5.7× GPU slowdown vs Vocos at matched params; 2× per-parameter memory; complex kernels less optimised in CPU BLAS than float32 (gap likely widens); from-scratch GAN only — no FM / consistency / MeanFlow integration tested; phase quantization N<sub>q</sub>=128 is a hyperparameter to tune; mel-conditional only.</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> mel-vocoding @ 24 kHz speech (the tested regime). Open question: does the CVNN advantage <em>widen</em> in the unconditional regime where the network has to learn coherent phase from noise rather than locking it in from the mel? The structural argument says yes; nobody has tested it. Phase quantization could in principle port to Flow2GAN's multi-branch RVNN backbone (treat phase as <code>atan2(imag, real)</code> of channel-concatenated tensors) — also untested.</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (Xeon batch 16, 1 s @ 24 kHz):</strong> not measured. <em>Extrapolation:</em> if the CPU complex-vs-float32 BLAS gap is ~2–4× worse than the GPU complex-vs-float32 gap, ComVo at 13.28 M would land at ~25–40× xRT on Xeon batch 16 — well above real-time, plausibly the second-fastest STFT backbone after Vocos and ahead of Flow2GAN. <strong>If true, ComVo would be the project's preferred STFT backbone</strong> (better quality than Vocos, better CPU than Flow2GAN, single-branch simplicity). Confirming this is the highest-priority benchmark for this section.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2603.11589.md">ComVo (2603.11589)</a>.</div>
+      </section>
+    </article>
+
+    <!-- ============================================================ -->
+    <!-- PANEL C: Transformer on Patched                                -->
+    <!-- ============================================================ -->
+    <article class="panel" id="panel-4C">
+      <header class="panel-header">
+        <h3 class="panel-title">C. Transformer on Patched <span class="panel-sub">— 2-D patched STFT (preferred) or 1-D patched waveform (higher risk)</span></h3>
+        <div class="panel-tags">
+          <span class="tag seq-patched">seq: patched (~200–300 tokens, fixed across clip length)</span>
+          <span class="tag s-mid">CPU: UNTESTED on audio; pixel data strong (pMF-B/16 33 GFLOPs / 3.12 FID @ 1-NFE)</span>
+          <span class="tag m-graceful">audio fit: untested — biggest empty cell in this section</span>
+        </div>
+      </header>
+      <p class="panel-summary">
+        Linear patch embedding → stacked transformer blocks → linear unembedding, with <strong>patch size as the cost knob</strong>. <strong>The closer analogue to the image case is patched STFT</strong> (a true 2-D time-frequency grid like an image, with complex magnitude/phase as the channel axis) — <em>not</em> patched waveform (a 1-D port that drops the structural prior). Both are presented below: C1 (patched STFT) is the lower-risk pick, C2 (patched waveform) is the cheaper but higher-risk alternative since seam continuity at sample boundaries is unverified. <strong>Neither has a published recipe for unconditional/lightly-conditional continuous audio generation</strong> — patched-STFT transformers exist for classification (AST, HTS-AT) and masked-autoencoder pretraining (AudioMAE), but the generative cell is empty. Pixel data is strong (<a href="../papers/2601.22158.md">pMF-B/16</a> 33 GFLOPs / 3.12 FID @ 1-NFE). The headline image-side win — token-count-constant scaling → constant CPU latency across clip length — should port to either C1 or C2.
+      </p>
+
+      <!-- C1: Patched STFT (PREFERRED) -->
+      <section class="subpanel" id="panel-4C1">
+        <header class="subpanel-header">
+          <h4>C1. Patched STFT — 2-D time-frequency transformer</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-mid">CPU on audio: UNTESTED; should inherit Panel-B hop-rate CPU regime</span>
+            <span class="tag q-high">params: pMF-B/16-class baseline (~118 M / ~25–33 GFLOPs)</span>
+            <span class="tag m-graceful">audio fit: closest 2-D image analogue; iSTFT solves seam continuity</span>
+            <span class="tag">no published audio generation recipe</span>
+          </div>
+        </header>
+        <p>
+          The structural argument: an image is a 2-D grid of pixels with multi-channel features; a complex STFT is a 2-D grid of frames × frequency bins with real/imag (or magnitude/phase) as the channel axis. <strong>2-D ViT/DiT patches port directly to this structure</strong>. Example sizing: 1 s @ 24 kHz, NFFT 1024, hop 256 → 94 frames × 513 bins, real+imag stacked along channel → patches of (8 × 32) give 12 × 16 = <strong>192 tokens</strong>. Holding token count constant across clip length means growing the time-axis patch size only (frequency-axis patch size stays fixed); same constant-CPU-latency-across-clip-length property as the pure 1-D port.
+        </p>
+        <p>
+          <strong>Continuity solved by iSTFT.</strong> The output is a complex spectrogram; iSTFT with overlap-add (Hann or similar) inherently smooths frame boundaries. The remaining audio-canonical concern is <strong>phase coherence across adjacent STFT frames</strong> — well-studied with two off-the-shelf mitigations:
+        </p>
+        <ol>
+          <li><strong>Predict the complex STFT directly</strong> (Flow2GAN / ComVo style) — phase becomes implicit in the iSTFT readout, no separate phase loss needed. Closest fit to a from-scratch transformer recipe.</li>
+          <li><strong>Predict magnitude + explicit phase</strong> with an <code>atan2</code>-wrapped phase-angle loss (WaveFM style: <code>L_pha = (1/N)‖atan2(sin(ΔP), cos(ΔP))‖₁</code>). Useful if the backbone naturally produces real-valued outputs.</li>
+        </ol>
+        <p>
+          <strong>Inheritance from Panel B.</strong> The STFT-domain ConvNeXt family (Vocos / RFWave / Flow2GAN / ComVo) has already proved that <em>STFT-frame-rate operating sequences are the only proven &gt;RT CPU regime in the wiki</em>. A transformer body on the same operating space should inherit that CPU advantage. ComVo's complex-valued layers + phase quantisation are orthogonal axes that could compose with C1 (complex-valued transformer, untested).
+        </p>
+        <p>
+          <strong>Composes with the MeanFlow training recipe</strong> (Section 3) verbatim: same iMF / TVM-engineered loss, same in-context conditioning for CLAP / MATPAC (low-rate semantic vectors append as tokens), same patch-size-as-cost-knob property. The pairing is "iMF objective on a 2-D STFT-patch ViT backbone with complex-direct output and iSTFT readout".
+        </p>
+        <p>
+          <strong>Adjacent published work, none generative.</strong> Audio Spectrogram Transformer (Gong 2021) and HTS-AT patch mel spectrograms for ViT-style attention — both classification-only. <a href="../papers/2511.13720.md">AudioMAE</a>-style masked-autoencoder pretraining exists but is not a generation recipe. Stable Audio family uses DiT on VAE latents (not raw STFT). MAGNeT / AudioLM / MusicGen use AR transformer on discrete codes. <strong>The "continuous generative transformer on patched STFT" cell is the wiki's emptiest high-leverage experiment.</strong>
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> closest 2-D analogue of the image papers — pixel-space lessons (x-prediction, bottleneck embed, in-context conditioning) transfer with minimal modification; iSTFT solves seam continuity for free; phase coherence is well-studied with two ready-made loss recipes; inherits Panel-B's &gt;RT CPU regime; complex-valued layers (ComVo) and phase quantisation are orthogonal upgrades; patch-size knob → constant CPU latency across clip length.</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> <em>zero published audio generation results</em> — every claim is structural; magnitude vs complex-direct prediction is an open recipe choice; freq-axis patches treat low and high bins identically (questionable inductive bias); CLAP/MATPAC token integration shape is not validated on this backbone; STFT preprocessing adds a small compute step and a hyperparameter surface (NFFT, hop, window).</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> the highest-leverage untested cell in Section 4. Should compose naturally with Section-2 finetune (ARC / FD-loss / CM) or section-3 MeanFlow training. CLAP / MATPAC semantic vectors append as in-context tokens. Recommended experiment: pMF-B/16-class transformer on a 1 s @ 24 kHz / hop-256 STFT patched (8×32), complex-direct output with iSTFT readout, MeanFlow training, FD-loss polish.</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (audio, batch 1, 1 s @ 24 kHz):</strong> at ~192 tokens on a B/16-class transformer (~25–35 GFLOPs / 1-NFE), expect per-step CPU comparable to pMF's pixel B/16 (~1–3 s on a modern laptop CPU single-thread). Should land in the same ballpark as <a href="../papers/2512.23278.md">Flow2GAN</a>'s 4.85× xRT or slightly slower on Transformer attention. Untested.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2601.22158.md">pMF (2601.22158)</a> (training recipe); <a href="../papers/2511.13720.md">JiT (2511.13720)</a> (structural baseline); <a href="../papers/2512.23278.md">Flow2GAN (2512.23278)</a> (the conv-on-STFT cousin); <a href="../papers/2603.11589.md">ComVo (2603.11589)</a> (complex-valued layer port).</div>
+      </section>
+
+      <!-- C2: Patched waveform (DEMOTED) -->
+      <section class="subpanel" id="panel-4C2">
+        <header class="subpanel-header">
+          <h4>C2. Patched waveform — 1-D direct port of pMF/JiT (higher risk)</h4>
+          <div class="subpanel-tags">
+            <span class="tag s-mid">CPU on audio: UNTESTED. Pixel: pMF-B/16 33 GFLOPs / FID 3.12 @ 1-NFE</span>
+            <span class="tag q-high">params: 118 M (B/16) / 410 M (L/16) / 956 M (H/16)</span>
+            <span class="tag m-graceful">audio fit: seam continuity at sample boundaries is the unverified failure mode</span>
+            <span class="tag">cheaper port; less structurally aligned</span>
+          </div>
+        </header>
+        <p>
+          The 1-D direct port: drop the 2-D image structure, patch the raw waveform along time. <a href="../papers/2601.22158.md">pMF</a> = <a href="../papers/2511.13720.md">JiT</a> + iMF MeanFlow + perceptual loss + <code>x</code>-pred ↦ <code>v</code>-loss conversion; the 1-D audio analogue replaces 2-D patches with 1-D patches of length <code>patch_len</code> (e.g., 86 samples for 1 s @ 22 kHz / 256 tokens). Class conditioning becomes CLAP / MATPAC in-context tokens.
+        </p>
+        <p>
+          <strong>The continuity problem is the canonical concern.</strong> Adjacent output patches must match at sample boundaries — without explicit smoothing the transformer can produce clicks or pops at every patch seam. There is <em>no published recipe</em> for enforcing this on audio. Plausible mitigations include learned overlap-add (predict slightly longer patches and crossfade), an auxiliary continuity loss on patch boundary samples, or simply hoping attention learns it. None has been validated.
+        </p>
+        <p>
+          <strong>Optional minimal conv smoothing head.</strong> The lightest-touch structural fix: append a small 1-D conv stack at sample rate (3–5 layers, kernel ~9–15) after the patch concatenation, so the transformer produces patched outputs and the conv head smooths seams as the last step. This is structurally what every working "tokens → waveform" system already does (neural vocoders, codec decoders, the Stable Audio VAE decoder); the transformer-on-patched experiment retains its identity since the head is a few percent of total compute. Two virtues over a boundary-continuity loss alone: (i) the parametrization itself carries the seam-handling rather than asking the loss to teach a constraint the function class doesn't naturally express; (ii) it handles <em>global</em> phase-coherence side-effects (a sustained fundamental spans ~100 patches at 22 kHz / 86-sample-patch) that a purely local boundary penalty cannot. Two virtues over 50%-Hann learned overlap-add: (i) no 2× token blowup; (ii) no bandwidth-limiting smoothing of patch contents. Composes with the boundary-continuity loss above as a belt-and-braces option.
+        </p>
+        <p>
+          <strong>Headline pixel result:</strong> pMF-B/16 at 118 M / 33 GFLOPs / FID 3.12 @ 1-NFE — cheapest 1-NFE pixel result anywhere. Patch-size scaling holds across image resolutions (H/32 @ 512² = H/16 @ 256² GFLOPs), so the constant-clip-length-CPU argument transfers.
+        </p>
+        <p>
+          <strong>Why C2 is the higher-risk pick.</strong> (i) 2-D patches in image papers carry locality structure that 1-D waveform patches don't; (ii) iSTFT readout solves seams for free in C1, while C2 has to invent the mitigation; (iii) the STFT-frame-rate operating regime of C1 inherits Panel-B's proven &gt;RT CPU advantage; (iv) phase / harmonic content has a 2-D structure that transformer attention can exploit more naturally on STFT patches.
+        </p>
+        <div class="row strengths"><strong>Strengths:</strong> cheapest direct port from pMF/JiT — no STFT preprocessing, no phase loss to design; constant CPU latency across clip length via 1-D patch-size knob; minimal architectural deviation from image recipes; the smallest reproducible baseline.</div>
+        <div class="row weaknesses"><strong>Weaknesses:</strong> <em>seam continuity at sample boundaries is unverified</em> — the canonical failure mode; less inductive bias for harmonic / time-frequency content than C1; <code>x</code>-pred / <code>v</code>-pred conversion is recipe-specific and load-bearing — wrong combination collapses pixel quality, audio failure mode is unknown; 1-D drops the 2-D structure that makes image patching work.</div>
+        <div class="row audio-notes"><strong>Audio fit:</strong> the cheapest experimental baseline if you want to test "is transformer-on-patched even viable for continuous audio" without taking on the extra STFT recipe surface. If C2 fails on seam continuity, C1 is the next bet. If C2 works, C1 should work strictly better.</div>
+        <div class="row cpu-estimate"><strong>CPU estimate (laptop, batch 1, 1 s @ 22 kHz, B/16-analogue):</strong> 33 GFLOPs / 1-NFE / 256 tokens. On a modern laptop CPU at ~10–30 GFLOP/s sustained throughput single-thread, ~1–3 s per 1-NFE forward — <strong>sub-RT</strong> at 1 s, marginal. Smaller EPG-L/16 consistency variant (~4 GFLOPs) would be &gt;RT but at lower quality. Constant-clip-length-CPU scaling untested for 1-D.</div>
+        <div class="row refs"><strong>Refs:</strong> <a href="../papers/2601.22158.md">pMF (2601.22158)</a>; <a href="../papers/2511.13720.md">JiT (2511.13720)</a>; <a href="../papers/2510.12586.md">EPG (2510.12586)</a>.</div>
+      </section>
+
+    </article>
+
+  </div>
+</section>
+<section class="recommendations" id="recommendations">
+  <header class="section-header-wrapper">
+    <h2 class="section-header"><span class="section-num">&#9733;</span> Candidate stacks</h2>
+    <p class="section-intro">
+      Five handpicked routes through the menu, each tuned to a different optimisation target. None are committed bets &mdash; the menu is the primary surface, these are reading aids. Tags on each card mirror the per-panel scheme. Where a stack is speculative or audio-untested, it&rsquo;s flagged explicitly in the risk callout.
+    </p>
+  </header>
+
+  <div class="stack-cards">
+
+    <!-- Stack 1: Safest CPU >RT (proven) -->
+    <article class="stack-card">
+      <h3>1. Safest CPU &gt;RT path <span class="stack-stars">&#9733;&#9733;&#9733;&#9733;</span></h3>
+      <p class="stack-tagline">The only stack in the menu with a <em>published</em> &gt;RT CPU number on audio. Boring, derisked, fastest path to a working artefact.</p>
+      <div class="stack-recipe">
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Pretrain</span><span class="stack-recipe-val">FM/RF with audio fixes (&sect;1A) &mdash; <code>x&#8321;</code>-reparam + spectral-energy-inverse weighting</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Finetune</span><span class="stack-recipe-val">Adversarial: ARC/APT-mode (&sect;2A2) <em>or</em> Flow2GAN-mode (&sect;2A1)</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Backbone</span><span class="stack-recipe-val">Multi-branch STFT-ConvNeXt (&sect;4B3) at hops {256, 128, 64}, ~78 M</span></div>
+      </div>
+      <div class="stack-notes">
+        <p><strong>CPU estimate:</strong> Flow2GAN published 4.85&times; RT @ 1-NFE on Xeon Platinum 8457C / batch 16 / 24 kHz / 78.9 M. Laptop batch-1 likely 1&ndash;3&times; RT.</p>
+        <p><strong>1-NFE quality:</strong> PESQ 4.19 (vocoder). Audio-side unconditional quality unmeasured.</p>
+        <p><strong>RF inversion:</strong> destroyed (confirmed by user on SAO &times; ARC).</p>
+      </div>
+      <div class="stack-risk"><strong>Risk:</strong> ARC&rsquo;s audio CPU number is mobile-class (Vivo X200); desktop benchmark missing. Project should re-measure on laptop CPU at batch=1 before committing.</div>
+    </article>
+
+    <!-- Stack 2: Highest 1-NFE quality ceiling -->
+    <article class="stack-card">
+      <h3>2. Highest 1-NFE quality ceiling <span class="stack-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</span></h3>
+      <p class="stack-tagline">Image-side ceiling is FID 0.72 @ 1-NFE (iMF + FD-loss). The headline scientific bet &mdash; does it port to audio?</p>
+      <div class="stack-recipe">
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Pretrain</span><span class="stack-recipe-val">MeanFlow base (&sect;1D / &sect;3A.1) &mdash; iMF objective + TVM engineering (RMSNorm&#8315; + FlashAttn JVP kernel)</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Finetune</span><span class="stack-recipe-val">FD-loss polish (&sect;2B) &mdash; CLAP / MATPAC / AudioMAE as &phi;</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Backbone</span><span class="stack-recipe-val">Multi-branch STFT-ConvNeXt (&sect;4B3) <em>or</em> DiT-pMF analogue (&sect;4C2)</span></div>
+      </div>
+      <div class="stack-notes">
+        <p><strong>CPU estimate:</strong> 1-NFE by construction; inherits backbone cost (4.85&times; RT for &sect;4B3, untested for &sect;4C2 on audio).</p>
+        <p><strong>1-NFE quality:</strong> image-side 0.72 FID on ImageNet-256; <em>audio analogue is the empty cell</em>.</p>
+        <p><strong>RF inversion:</strong> partial (MF collapses to FM in <code>r&rarr;t</code> limit).</p>
+      </div>
+      <div class="stack-risk"><strong>Risk:</strong> every audio MeanFlow paper has conditioned on a frozen intermediate representation (mel / SSL / VAE-latent). Unconditional raw-waveform MF + FD-loss is the wiki&rsquo;s biggest unmapped territory. TVM&rsquo;s FlashAttn-JVP kernel is also not yet released.</div>
+    </article>
+
+    <!-- Stack 3: Tiny-budget percussive corner -->
+    <article class="stack-card">
+      <h3>3. Tiny-budget percussive corner <span class="stack-stars">&#9733;&#9733;&#9733;</span></h3>
+      <p class="stack-tagline">Cheapest path to &gt;10&times; RT CPU. Drum/percussive only. No diffusion, no ODE, no inversion &mdash; just a small GAN with rich conditioning.</p>
+      <div class="stack-recipe">
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Pretrain</span><span class="stack-recipe-val">None (1-stage)</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Finetune</span><span class="stack-recipe-val">Pure 1-step GAN (&sect;3B) &mdash; R3GAN stability (R1 + R2 + RpGAN), CLAP/MATPAC as cross-attn</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Backbone</span><span class="stack-recipe-val">Tiny conv stack &lt;2 M (&sect;4A1) &mdash; HiFi-GAN-V3-style MRF ResBlocks</span></div>
+      </div>
+      <div class="stack-notes">
+        <p><strong>CPU estimate:</strong> &gt;10&times; RT on laptop CPU (extrapolated from HiFi-GAN V3: 1.46 M / 13.44&times; RT on 2020 i7).</p>
+        <p><strong>1-NFE quality:</strong> MOS 4.05-class on percussive content; unmeasured on music.</p>
+        <p><strong>RF inversion:</strong> destroyed (pure GAN, no ODE).</p>
+      </div>
+      <div class="stack-risk"><strong>Risk:</strong> HiFi-GAN V3 is a mel-vocoder benchmark, not unconditional generation. CLAP/MATPAC are lower-bitrate than mel, so the conditioning carries less per-clip information. Probably works for drum one-shots; sustained harmonic content is the gamble.</div>
+    </article>
+
+    <!-- Stack 4: Inversion-preserving editing path -->
+    <article class="stack-card">
+      <h3>4. Inversion-preserving editing path <span class="stack-stars">&#9733;&#9733;</span></h3>
+      <p class="stack-tagline">The only stack that preserves full RF invertibility. For editing / variations / latent-space interpolation. Speculative on every axis.</p>
+      <div class="stack-recipe">
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Pretrain</span><span class="stack-recipe-val">Reflow / 2-RF (&sect;1B) on FM teacher &mdash; straightens the trajectory while preserving ODE</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Finetune</span><span class="stack-recipe-val">None, <em>or</em> FD-loss (&sect;2B) with speculative trajectory-anchor regularizer <code>&Vert;v&theta; &minus; v_pretrain&Vert;&sup2;</code></span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Backbone</span><span class="stack-recipe-val">Any &mdash; &sect;4B3 STFT-multi-branch is the safe default</span></div>
+      </div>
+      <div class="stack-notes">
+        <p><strong>CPU estimate:</strong> per-step is backbone cost; total = NFE &times; per-step. 2-RF can run at 1&ndash;4 NFE; inversion-mode needs small <code>&Delta;t</code> increments (more NFE).</p>
+        <p><strong>1-NFE quality:</strong> image-side 2-RF is near-CIFAR-class at 1-NFE. Likely needs a section-2 polish to match Stack 2&rsquo;s ceiling.</p>
+        <p><strong>RF inversion:</strong> <em>preserved</em> &mdash; the unique structural property of this stack.</p>
+      </div>
+      <div class="stack-risk"><strong>Risk:</strong> wiki ingest of arXiv 2209.03003 pending (tool perms blocked). All audio reflow data is non-existent. Worth one experimental run only if inversion is a load-bearing project requirement.</div>
+    </article>
+
+    <!-- Stack 5: Drifting + CLAP/MATPAC -->
+    <article class="stack-card">
+      <h3>5. Drifting + CLAP/MATPAC as &phi; <span class="stack-stars">&#9733;&#9733;&#9733;&#9733;</span></h3>
+      <p class="stack-tagline">The image-side 1-NFE leader <em>when &phi; is available</em>. CLAP/MATPAC slot in structurally as the perceptual feature net &mdash; the project&rsquo;s most natural fit.</p>
+      <div class="stack-recipe">
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Pretrain</span><span class="stack-recipe-val">None (1-stage)</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Finetune</span><span class="stack-recipe-val">Drifting (&sect;3C) &mdash; 1-NFE pixel/sample-space DiT with frozen &phi; = CLAP or MATPAC</span></div>
+        <div class="stack-recipe-line"><span class="stack-recipe-key">Backbone</span><span class="stack-recipe-val">DiT-pMF analogue (&sect;4C2) <em>or</em> multi-branch STFT-ConvNeXt (&sect;4B3)</span></div>
+      </div>
+      <div class="stack-notes">
+        <p><strong>CPU estimate:</strong> 1-NFE by construction; pMF-B/16 image-side is 33 GFLOPs. Audio CPU untested but should land near the &sect;4B3 / &sect;4C2 baselines.</p>
+        <p><strong>1-NFE quality:</strong> image-side 1.61 FID @ L/16 with frozen &phi; &mdash; <em>best 1-NFE pixel result anywhere</em> when &phi; is available.</p>
+        <p><strong>RF inversion:</strong> partial (similar structure to MeanFlow &mdash; preserves ODE in the limit).</p>
+      </div>
+      <div class="stack-risk"><strong>Risk:</strong> Drifting is image-only in published results; CLAP/MATPAC as audio-&phi; is the structural extrapolation. von Mises-Fisher kernel choice on normalised embeddings is the natural resolution of the K&#x2074; issue, but untested.</div>
+    </article>
+
+  </div>
+
+  <div style="margin-top: 2em; padding: 1.2em 1.5em; background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;">
+    <h3 style="color: var(--warning); margin: 0 0 0.5em 0; font-size: 1em;">Cross-cutting empty cells worth one experiment each</h3>
+    <ul style="margin: 0; padding-left: 1.4em; font-size: 0.9em;">
+      <li><strong>FM+CM on STFT-ConvNeXt backbone</strong> &mdash; WaveFM&rsquo;s training-stable CM recipe on Flow2GAN&rsquo;s CPU-fast architecture. Wiki flags this explicitly as the single most informative cross-paper experiment.</li>
+      <li><strong>iMF + FD-loss on raw waveform, unconditional</strong> &mdash; the headline image-side jump (3.12 &rarr; 0.72 FID) is the project&rsquo;s biggest "does it port" question.</li>
+      <li><strong>ComVo (complex-valued STFT-ConvNeXt) CPU benchmark</strong> &mdash; wins quality vs Vocos but no CPU number anywhere. Single biggest missing measurement in the STFT-domain family.</li>
+      <li><strong>CRASH-class small 1-D U-Net unconditional CPU benchmark</strong> &mdash; closes the only remaining empty cell in &sect;4A. WaveFM at 19.5 M is 0.64&times; RT; CRASH-shape at 5&ndash;20 M might or might not differ.</li>
+      <li><strong>R2 on MPD/MRD audio discriminators</strong> &mdash; one-line training change; R3GAN&rsquo;s theory predicts a diversity gain; no audio paper has tested it.</li>
+    </ul>
+  </div>
+</section>
+<footer class="doc-footer">
+  <p><strong>Living wiki sources</strong> · <a href="../wiki/concepts/methods.md">methods.md</a> · <a href="../wiki/concepts/post-training.md">post-training.md</a> · <a href="../wiki/concepts/architecture.md">architecture.md</a> · <a href="../wiki/concepts/inference.md">inference.md</a> · <a href="../wiki/concepts/representation-space.md">representation-space.md</a> · <a href="../wiki/concepts/evaluation.md">evaluation.md</a></p>
+  <p>Snapshot 2026·05·18 · Reflow / 2-RF (arXiv 2209.03003) ingest pending · §1 panel B from brief, not from a per-paper synthesis · Verify CPU estimates on target laptop CPU at batch 1 before committing</p>
+</footer>
+
+</main>
+</div>
+</body>
+</html>
