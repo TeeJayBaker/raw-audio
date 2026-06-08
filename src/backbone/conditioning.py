@@ -4,7 +4,8 @@ import math
 
 import torch
 from torch import nn
-from torch.nn import functional as F
+
+from backbone.blocks import RMSNorm
 
 
 class TimeEmbedding(nn.Module):
@@ -36,36 +37,40 @@ class TimeEmbedding(nn.Module):
         return self.mlp(torch.cat([torch.sin(args), torch.cos(args)], dim=1))
 
 
-class AdaLN(nn.Module):
-    """AdaLN-Zero modulation: maps a global conditioning vector to `groups`
-    zero-initialised modulation tensors of width `channels` (so the block is an
-    identity at initialisation)."""
+class ConditioningEmbedding(nn.Module):
+    """External conditioning embedding projected to `cond_dim` by a small MLP."""
 
-    def __init__(self, cond_dim: int, channels: int, groups: int):
+    def __init__(self, embed_dim: int, cond_dim: int):
         super().__init__()
-        self.groups = groups
-        self.proj = nn.Linear(cond_dim, groups * channels)
-        nn.init.zeros_(self.proj.weight)
-        nn.init.zeros_(self.proj.bias)
+        self.mlp = nn.Sequential(nn.Linear(embed_dim, cond_dim), nn.SiLU(), nn.Linear(cond_dim, cond_dim))
 
-    def forward(self, cond: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        return self.proj(F.silu(cond)).chunk(self.groups, dim=-1)
+    def forward(self, cond: torch.Tensor) -> torch.Tensor:
+        return self.mlp(cond)
 
 
-def prepare_conditioning(
-    t_embed: torch.Tensor | None,
-    cond: torch.Tensor | None,
-    cond_dim: int,
-) -> torch.Tensor:
-    """Combine the embedded timestep and the optional global conditioning vector
-    into a single [B, cond_dim] tensor. At least one of the two must be present."""
-    if cond is not None:
-        if cond.ndim == 1:
-            cond = cond[None]  # bare [cond_dim] -> [1, cond_dim]
-        if cond.ndim != 2 or cond.shape[1] != cond_dim:
-            raise ValueError(f"Conditioning must be shaped [B, {cond_dim}], got {tuple(cond.shape)}")
-    if t_embed is None:
-        if cond is None:
-            raise ValueError("Backbone forward needs a timestep `t` and/or conditioning `cond`")
-        return cond
-    return t_embed if cond is None else t_embed + cond
+class ConditioningCombiner(nn.Module):
+    """RMS-normalise the embedded timestep and the (projected) global conditioning
+    independently, then sum into one [B, cond_dim] tensor. Per-path normalisation
+    bounds the time-embedding magnitude (it otherwise runs away to ~200 and drowns
+    the conditioning) and balances the two before the add. At least one of the two
+    must be present."""
+
+    def __init__(self, cond_dim: int):
+        super().__init__()
+        self.cond_dim = cond_dim
+        self.time_norm = RMSNorm(cond_dim)
+        self.cond_norm = RMSNorm(cond_dim)
+
+    def forward(self, t_embed: torch.Tensor | None, cond: torch.Tensor | None) -> torch.Tensor:
+        if cond is not None:
+            if cond.ndim == 1:
+                cond = cond[None]  # bare [cond_dim] -> [1, cond_dim]
+            if cond.ndim != 2 or cond.shape[1] != self.cond_dim:
+                raise ValueError(f"Conditioning must be shaped [B, {self.cond_dim}], got {tuple(cond.shape)}")
+            cond = self.cond_norm(cond)
+        if t_embed is None:
+            if cond is None:
+                raise ValueError("Backbone forward needs a timestep `t` and/or conditioning `cond`")
+            return cond
+        t_embed = self.time_norm(t_embed)
+        return t_embed if cond is None else t_embed + cond

@@ -21,6 +21,7 @@ backbone:
     layer_scale: "1/depth"
   conditioning:
     cond_dim: 16
+    embed_dim: 16  # match the smoke conditioner's embedding_dim (overrides wavenext.yaml's 384)
     # time_scale inherits from ${flow.t_encoding.scale} via fm_baseline.yaml.
 
 data:

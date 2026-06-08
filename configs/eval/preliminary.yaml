@@ -8,7 +8,6 @@ metrics:
     backend: clap  # clap | vggish
     backend_cfg: {}
     distance: none  # none | fad | mind | both
-    sample_steps: 1
     mind_projections: 256
     cosine: false
     cache_real: true

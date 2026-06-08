@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from backbone.blocks import ConvNeXtBlock1d
-from backbone.conditioning import TimeEmbedding, prepare_conditioning
+from backbone.conditioning import ConditioningCombiner, ConditioningEmbedding, TimeEmbedding
 from backbone.io import (
     STFTConfig,
     as_waveform,
@@ -139,6 +139,8 @@ class ConvNeXt(nn.Module):
         self.out_channels = int(out_channels or channels)
         self.cond_dim = int(conditioning["cond_dim"])
         self.time_embed = TimeEmbedding(self.cond_dim, time_scale=conditioning.get("time_scale", 1.0))
+        self.cond_embed = ConditioningEmbedding(int(conditioning.get("embed_dim", self.cond_dim)), self.cond_dim)
+        self.cond_combine = ConditioningCombiner(self.cond_dim)
         self.branches = nn.ModuleList(
             [
                 STFTBranch(res, self.channels, self.out_channels, block, head, self.cond_dim)
@@ -156,6 +158,8 @@ class ConvNeXt(nn.Module):
         x = as_waveform(x)
         target = int(length or x.shape[-1])
         t_embed = self.time_embed(t) if t is not None else None
-        cond = prepare_conditioning(t_embed, cond, self.cond_dim)
+        if cond is not None:
+            cond = self.cond_embed(cond)
+        cond = self.cond_combine(t_embed, cond)
         # fp32 audio out regardless of head (WaveNeXtHead would otherwise return bf16 under AMP).
         return sum(branch(x, cond, target) for branch in self.branches).float()

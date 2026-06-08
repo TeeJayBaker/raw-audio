@@ -123,6 +123,7 @@ class BaseTrainer:
         self.ckpt_every = int(cfg.train.get("ckpt_every", 500))
         self.val_every = int(cfg.train.get("val_every", 500))
         self.grad_clip = float(cfg.train.get("grad_clip", 0.0))
+        self.grad_accum = max(1, int(cfg.train.get("grad_accum_steps", 1)))
         self.cond_dropout_prob = float(cfg.train.get("cond_dropout_prob", 0.0))
         self.step = 0
         self.progress: tqdm | None = None
@@ -240,6 +241,9 @@ class BaseTrainer:
         self.model.train()
         self.progress = tqdm(initial=self.step, total=self.max_steps, desc=type(self).__name__)
         try:
+            micro = 0
+            accum_loss = 0.0
+            accum_terms: dict[str, torch.Tensor] = {}
             while self.step < self.max_steps:
                 for batch in self.train_loader:
                     audio = batch["audio"].to(self.device)
@@ -247,9 +251,19 @@ class BaseTrainer:
                     sample_rate = int(batch["sample_rate"])
                     cond = self._cfg_dropout(self.condition(audio, sample_rate, audio_lengths))
 
-                    self.optimizer.zero_grad(set_to_none=True)
+                    if micro == 0:
+                        self.optimizer.zero_grad(set_to_none=True)
                     loss, terms = self.training_step(audio, cond)
-                    loss.backward()
+                    # Scale by 1/grad_accum so the accumulated gradient is the mean over the
+                    # grad_accum micro-batches (== the gradient of one batch_size*grad_accum batch).
+                    (loss / self.grad_accum).backward()
+                    accum_loss += loss.detach()
+                    for name, value in terms.items():
+                        accum_terms[name] = accum_terms.get(name, 0.0) + value.detach()
+                    micro += 1
+                    if micro < self.grad_accum:
+                        continue
+
                     if self.grad_clip > 0:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
                     self.optimizer.step()
@@ -259,7 +273,13 @@ class BaseTrainer:
 
                     self.step += 1
                     self.progress.update(1)
-                    self._periodic(loss, terms)
+                    self._periodic(
+                        accum_loss / self.grad_accum,
+                        {name: value / self.grad_accum for name, value in accum_terms.items()},
+                    )
+                    micro = 0
+                    accum_loss = 0.0
+                    accum_terms = {}
                     if self.step >= self.max_steps:
                         break
         finally:
@@ -365,4 +385,5 @@ class RFTrainer(BaseTrainer):
             guidance_scale=float(self.cfg.sampling.get("guidance_scale", 1.0)),
             lift_scale=self.lift_scale if self.rms_lift else 1.0,
         )
-        return audio.clamp(-1.0, 1.0)
+        peak = audio.abs().amax(dim=tuple(range(1, audio.ndim)), keepdim=True).clamp_min(1e-8)
+        return audio / peak

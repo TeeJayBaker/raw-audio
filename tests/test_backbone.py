@@ -8,8 +8,8 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from backbone.blocks import ConvNeXtBlock1d, TransformerBlock
-from backbone.conditioning import AdaLN, TimeEmbedding, prepare_conditioning
+from backbone.blocks import AdaLN, ConvNeXtBlock1d, TransformerBlock
+from backbone.conditioning import ConditioningCombiner, TimeEmbedding
 from backbone.convnext import ConvNeXt, IStftHead, WaveNeXtHead
 from backbone.factory import build_backbone, load_backbone_config
 from backbone.io import (
@@ -66,22 +66,24 @@ def test_trunks_resolve_to_expected_classes():
     assert isinstance(build_backbone("waveform_transformer"), Transformer)
 
 
-def test_prepare_conditioning_combines_timestep_and_conditioning():
+def test_conditioning_combiner_normalises_each_path_then_sums():
+    combiner = ConditioningCombiner(4)
     t = torch.randn(2, 4)
     cond = torch.randn(2, 4)
-    assert torch.allclose(prepare_conditioning(t, cond, 4), t + cond)
-    assert torch.allclose(prepare_conditioning(t, None, 4), t)
-    assert torch.allclose(prepare_conditioning(None, cond, 4), cond)
+    assert torch.allclose(combiner(t, cond), combiner.time_norm(t) + combiner.cond_norm(cond))
+    assert torch.allclose(combiner(t, None), combiner.time_norm(t))
+    assert torch.allclose(combiner(None, cond), combiner.cond_norm(cond))
     with pytest.raises(ValueError, match="timestep"):
-        prepare_conditioning(None, None, 4)
+        combiner(None, None)
 
 
-def test_prepare_conditioning_requires_correct_shape():
-    assert prepare_conditioning(None, torch.randn(2, 4), 4).shape == (2, 4)
-    assert prepare_conditioning(None, torch.randn(4), 4).shape == (1, 4)  # bare vector gets a batch dim
+def test_conditioning_combiner_requires_correct_shape():
+    combiner = ConditioningCombiner(4)
+    assert combiner(None, torch.randn(2, 4)).shape == (2, 4)
+    assert combiner(None, torch.randn(4)).shape == (1, 4)  # bare vector gets a batch dim
     for bad in (torch.randn(2, 3), torch.randn(2, 4, 1), torch.randn(2, 4, 3)):
         with pytest.raises(ValueError, match=r"\[B, 4\]"):
-            prepare_conditioning(None, bad, 4)
+            combiner(None, bad)
 
 
 def test_adaln_zero_init_is_identity_modulation():
@@ -98,7 +100,9 @@ def test_transformer_block_forward():
 
 def test_convnext_block_forward():
     block = ConvNeXtBlock1d(8, cond_dim=4, kernel_size=3)
-    assert block(torch.randn(2, 8, 16), torch.randn(2, 4)).shape == (2, 8, 16)
+    x = torch.randn(2, 8, 16)
+    assert block(x, torch.randn(2, 4)).shape == (2, 8, 16)
+    assert torch.allclose(block(x, torch.randn(2, 4)), x)  # zero-init AdaLN gate => identity at init
 
 
 def test_stft_round_trip():

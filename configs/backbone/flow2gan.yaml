@@ -21,4 +21,5 @@ block:
   expansion: 3
   layer_scale: "1/depth"
 conditioning:
-  cond_dim: 384  # matches MATPAC's native embedding dim
+  cond_dim: 384  # conditioning width (independent of block width)
+  embed_dim: 384  # conditioner output dim, projected to cond_dim

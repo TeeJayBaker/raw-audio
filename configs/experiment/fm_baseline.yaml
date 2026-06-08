@@ -42,6 +42,7 @@ train:
   amp: true
   ema_decay: 0.999
   grad_clip: 1.0
+  grad_accum_steps: 1  # micro-batches accumulated per optimizer step (effective batch = batch_size * this)
   warmup_steps: 100  # linear LR warmup, then cosine decay to min_lr_ratio over max_steps
   min_lr_ratio: 0.0  # cosine decay floor as a fraction of the base LR
   resume: null  # null | "auto" (latest checkpoint in run_dir) | path to a .pt

@@ -4,8 +4,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from backbone.conditioning import AdaLN
-
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -16,6 +14,22 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return x * self.weight
+
+
+class AdaLN(nn.Module):
+    """AdaLN-Zero modulation: maps a global conditioning vector to `groups`
+    zero-initialised modulation tensors of width `channels` (so the block is an
+    identity at initialisation)."""
+
+    def __init__(self, cond_dim: int, channels: int, groups: int):
+        super().__init__()
+        self.groups = groups
+        self.proj = nn.Linear(cond_dim, groups * channels)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, cond: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        return self.proj(F.silu(cond)).chunk(self.groups, dim=-1)
 
 
 def _rope(x: torch.Tensor) -> torch.Tensor:
@@ -104,7 +118,8 @@ class TransformerBlock(nn.Module):
 
 class ConvNeXtBlock1d(nn.Module):
     """ConvNeXt block on [B, C, T]: depthwise conv, channel LayerNorm, AdaLN-Zero
-    modulation, inverted-bottleneck pointwise MLP, LayerScale residual."""
+    modulation (scale/shift + zero-init gate on the residual branch),
+    inverted-bottleneck pointwise MLP, LayerScale residual."""
 
     def __init__(
         self,
@@ -117,7 +132,7 @@ class ConvNeXtBlock1d(nn.Module):
         super().__init__()
         self.depthwise = nn.Conv1d(channels, channels, kernel_size, padding=kernel_size // 2, groups=channels)
         self.norm = nn.LayerNorm(channels)
-        self.ada = AdaLN(cond_dim, channels, groups=2)
+        self.ada = AdaLN(cond_dim, channels, groups=3)
         hidden = channels * expansion
         self.pointwise = nn.Sequential(nn.Conv1d(channels, hidden, 1), nn.GELU(), nn.Conv1d(hidden, channels, 1))
         self.layer_scale = nn.Parameter(torch.ones(1, channels, 1) * layer_scale) if layer_scale is not None else None
@@ -125,9 +140,9 @@ class ConvNeXtBlock1d(nn.Module):
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         h = self.depthwise(x)
         h = self.norm(h.transpose(1, 2)).transpose(1, 2)
-        scale, shift = self.ada(cond)
+        scale, shift, gate = self.ada(cond)
         h = h * (1 + scale[..., None]) + shift[..., None]
         h = self.pointwise(h)
         if self.layer_scale is not None:
             h = h * self.layer_scale
-        return x + h
+        return x + gate[..., None] * h
