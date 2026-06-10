@@ -10,6 +10,7 @@ class CLAPEmbedding(nn.Module):
     """LAION-CLAP audio embedding wrapper for distribution metrics."""
 
     sample_rate = 48000
+    name = "clap"
 
     def __init__(
         self,
@@ -43,8 +44,7 @@ class CLAPEmbedding(nn.Module):
         self.embedding_dim = 512
         self.eval()
 
-    @torch.no_grad()
-    def forward(
+    def embed(
         self,
         audio: torch.Tensor,
         sample_rate: int = 48000,
@@ -56,13 +56,24 @@ class CLAPEmbedding(nn.Module):
                 f"CLAPEmbedding was initialized for {self.input_sample_rate} Hz input, "
                 f"but got {sample_rate} Hz."
             )
-        audio = audio.detach().to(self.device).float()
+        audio = audio.to(self.device).float()
         if audio.ndim == 3:
             audio = audio.mean(dim=1)
         if self.resampler is not None:
             audio = self.resampler(audio)
+        # use_tensor=True skips waveform quantization, keeping the graph intact (laion moves the
+        # tensor to the model device internally), so embed stays differentiable for FD-loss.
         chunks = []
         for i in range(0, audio.shape[0], self.encode_batch_size):
-            chunk = audio[i : i + self.encode_batch_size].cpu()
+            chunk = audio[i : i + self.encode_batch_size]
             chunks.append(self.model.get_audio_embedding_from_data(x=chunk, use_tensor=True))
         return F.normalize(torch.cat(chunks, dim=0), p=2, dim=-1)
+
+    @torch.no_grad()
+    def forward(
+        self,
+        audio: torch.Tensor,
+        sample_rate: int = 48000,
+        audio_lengths: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.embed(audio, sample_rate=sample_rate, audio_lengths=audio_lengths)

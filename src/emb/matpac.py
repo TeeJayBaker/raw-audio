@@ -12,6 +12,8 @@ from matpac.wrapper import MATpacWrapper
 class MATPACEmbedding(nn.Module):
     """Frozen MATPAC embedding wrapper."""
 
+    name = "matpac"
+
     def __init__(
         self,
         checkpoint_path: str | Path,
@@ -48,8 +50,7 @@ class MATPACEmbedding(nn.Module):
             param.requires_grad = False
         self.eval()
 
-    @torch.no_grad()
-    def forward(
+    def embed(
         self,
         audio: torch.Tensor,
         sample_rate: int = 48000,
@@ -60,7 +61,7 @@ class MATPACEmbedding(nn.Module):
                 f"MATPACEmbedding was initialized for {self.input_sample_rate} Hz input, "
                 f"but got {sample_rate} Hz."
             )
-        audio = audio.detach().to(self.device).float()
+        audio = audio.to(self.device).float()
         if audio_lengths is not None:
             audio_lengths = audio_lengths.to(self.device)
         if self.resampler is not None:
@@ -68,6 +69,15 @@ class MATPACEmbedding(nn.Module):
             if audio_lengths is not None:
                 audio_lengths = (audio_lengths.float() * (self.sample_rate / self.input_sample_rate)).long()
         return self.wrapper.encode_audio(audio, sample_rate=self.sample_rate, audio_lengths=audio_lengths)
+
+    @torch.no_grad()
+    def forward(
+        self,
+        audio: torch.Tensor,
+        sample_rate: int = 48000,
+        audio_lengths: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.embed(audio, sample_rate=sample_rate, audio_lengths=audio_lengths)
 
     @torch.no_grad()
     def encode_frames(

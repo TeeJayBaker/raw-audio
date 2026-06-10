@@ -65,6 +65,21 @@ class RectifiedFlow:
         guidance_scale: float = 1.0,
         lift_scale: float = 1.0,
     ) -> torch.Tensor:
+        """No-grad ODE sampling (inference / logging). See :meth:`generate` for the grad-carrying path."""
+        return self.generate(model, shape, cond, noise, steps, method, guidance_scale, lift_scale)
+
+    def generate(
+        self,
+        model,
+        shape: tuple[int, ...],
+        cond: torch.Tensor | None = None,
+        noise: torch.Tensor | None = None,
+        steps: int = 1,
+        method: str = "euler",
+        guidance_scale: float = 1.0,
+        lift_scale: float = 1.0,
+    ) -> torch.Tensor:
+        """ODE integration noise → audio, differentiable w.r.t. ``model`` (used by FD-loss)."""
         if steps < 1:
             raise ValueError("steps must be >= 1")
         if method not in {"euler", "heun"}:

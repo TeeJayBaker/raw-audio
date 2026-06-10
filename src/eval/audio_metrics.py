@@ -77,6 +77,43 @@ def _symmetric_matrix_sqrt(matrix: torch.Tensor, eps: float) -> torch.Tensor:
     return (evecs * evals.sqrt().unsqueeze(0)) @ evecs.T
 
 
+def frechet_from_moments(
+    mu_real: torch.Tensor,
+    cov_real: torch.Tensor,
+    mu_fake: torch.Tensor,
+    cov_fake: torch.Tensor,
+    eps: float = 1e-6,
+    cov_real_sqrt: torch.Tensor | None = None,
+) -> dict[str, torch.Tensor]:
+    """Gaussian 2-Wasserstein distance from precomputed moments. Differentiable in every argument.
+
+    Follows the FD-loss reference (arXiv 2604.28190): the cross term ``Tr((Σ_r Σ_g)^½)`` is the sum of
+    square roots of the eigenvalues of ``Σ_r^½ Σ_g Σ_r^½`` via ``eigvalsh`` — no eigenvectors, so the
+    backward is stable on rank-deficient covariances (unlike an ``eigh`` matrix-sqrt). ``cov_real_sqrt``
+    lets the caller pass a precomputed ``Σ_r^½`` (the real side is fixed in the loss).
+    """
+    out_dtype = mu_real.dtype
+    # The eigendecomposition is ill-conditioned on high-dim, near-rank-deficient encoder
+    # covariances (CLAP/MATPAC); run it in float64 regardless of input dtype, cast results back.
+    dtype = torch.float64
+    mu_real, cov_real = mu_real.to(dtype), cov_real.to(dtype)
+    mu_fake, cov_fake = mu_fake.to(dtype), cov_fake.to(dtype)
+    sqrt_cov_real = cov_real_sqrt.to(dtype) if cov_real_sqrt is not None else _symmetric_matrix_sqrt(cov_real, eps)
+
+    mean_term = (mu_real - mu_fake).pow(2).sum()
+    middle = sqrt_cov_real @ cov_fake @ sqrt_cov_real
+    evals = torch.linalg.eigvalsh((middle + middle.T) * 0.5)
+    # Floor the (numerically near-zero) eigenvalues so √· has a finite gradient on rank-deficient
+    # covariances; negligible on well-conditioned ones.
+    tr_covmean = evals.clamp_min(1e-12).sqrt().sum()
+    cov_term = torch.trace(cov_real) + torch.trace(cov_fake) - 2.0 * tr_covmean
+    return {
+        "fad": (mean_term + cov_term).clamp_min(0.0).to(out_dtype),
+        "mean": mean_term.to(out_dtype),
+        "covariance": cov_term.clamp_min(0.0).to(out_dtype),
+    }
+
+
 def frechet_audio_distance(
     real_embeddings: torch.Tensor,
     fake_embeddings: torch.Tensor,
@@ -89,27 +126,16 @@ def frechet_audio_distance(
     fake_embeddings = _as_embeddings(fake_embeddings, embedding_backend, **backend_kwargs)
     _validate_pair(real_embeddings, fake_embeddings)
 
-    dtype = torch.float64 if real_embeddings.dtype in (torch.float16, torch.bfloat16) else real_embeddings.dtype
-    real = real_embeddings.to(dtype)
-    fake = fake_embeddings.to(dtype)
-    mu_real = real.mean(dim=0)
-    mu_fake = fake.mean(dim=0)
-    cov_real = _covariance(real)
-    cov_fake = _covariance(fake)
-
-    mean_term = (mu_real - mu_fake).pow(2).sum()
-    sqrt_cov_real = _symmetric_matrix_sqrt(cov_real, eps)
-    middle = sqrt_cov_real @ cov_fake @ sqrt_cov_real
-    covmean = _symmetric_matrix_sqrt(middle, eps)
-    cov_term = torch.trace(cov_real + cov_fake - 2.0 * covmean)
-    fad = (mean_term + cov_term).clamp_min(0.0).to(real_embeddings.dtype)
-    return {
-        "fad": fad,
-        "mean": mean_term.to(real_embeddings.dtype),
-        "covariance": cov_term.clamp_min(0.0).to(real_embeddings.dtype),
-        "n_real": torch.tensor(real_embeddings.shape[0], device=real_embeddings.device),
-        "n_fake": torch.tensor(fake_embeddings.shape[0], device=fake_embeddings.device),
-    }
+    result = frechet_from_moments(
+        real_embeddings.mean(dim=0),
+        _covariance(real_embeddings),
+        fake_embeddings.mean(dim=0),
+        _covariance(fake_embeddings),
+        eps,
+    )
+    result["n_real"] = torch.tensor(real_embeddings.shape[0], device=real_embeddings.device)
+    result["n_fake"] = torch.tensor(fake_embeddings.shape[0], device=fake_embeddings.device)
+    return result
 
 
 def monge_audio_distance(

@@ -1,0 +1,68 @@
+# @package _global_
+#
+# FD-loss post-training (Representation Fréchet Loss, arXiv 2604.28190). The backbone, flow method,
+# sampling and conditioner are inherited from the pretrained checkpoint at train.init_from — do not
+# restate them here. Set train.init_from to a checkpoint produced by an earlier RFTrainer run.
+
+defaults:
+  - /train/default@train
+  - /data/audio_directory@data
+  - /eval/preliminary@eval
+  - _self_
+
+trainer:
+  _target_: trainer.FDTrainer
+
+data:
+  root: /media/storage/samples/samples_from_mars/one_shots  # mars one-shots (same corpus as the pretrained stft run)
+
+fd:
+  conditional: true  # condition generation on the inherited conditioner (e.g. MATPAC); false = unconditional
+  mode: ema  # 'ema' (default, scales better for multi-rep) or 'queue'
+  beta: 0.999  # EMA decay for the moment estimator
+  queue_size: 50000  # population size when mode=queue
+  c: 1.0e-2  # stabiliser in the self-normalising denominator FD_i / sg(FD_i + c); matches the paper
+  weights: null  # per-embedder weights (null = equal); list aligned with `embedders`
+  embedders:
+    # Each φ resamples from `input_sample_rate` (= data.sample_rate) to its own native rate
+    # internally. Other available differentiable types: random, encodec, mert, vggish, matpac.
+    - type: pann       # Cnn14 AudioSet, 2048-d
+    - type: audiomae   # AudioMAE ViT-B, 768-d
+    - type: clap       # LAION-CLAP music, 512-d
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1e-5  # small LR for post-training a pretrained generator
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+
+train:
+  run_dir: runs/fd-finetune
+  device: cuda:1
+  init_from: runs/fm-oneshots-mars-stft-b64-200k/checkpoints/step_00100000.pt  # pretrained stft generator
+  max_steps: 200000  # ~40 epochs at batch 24 over ~120k clips; matches the rf pretraining run's step count
+  amp: true
+  ema_decay: 0.999
+  grad_clip: 1.0
+  grad_accum_steps: 1
+  warmup_steps: 2000
+  resume: null  # null | "auto" (resume an interrupted FD run) | path
+  val_fraction: 0.02
+  log_every: 10
+  val_every: 1000
+  sample_every: 2000
+  ckpt_every: 50000
+  val_batches: 24
+  dataloader:
+    batch_size: 24  # max trainable micro-batch is 30 on a 24 GB GPU (probed); 24 keeps ~19% headroom
+    num_workers: 8
+    pin_memory: true
+    drop_last: true
+  wandb:
+    audio_examples: 10
+
+sampling:
+  steps: 1  # 1-NFE generation for FD-loss; override for few-step
+  guidance_scale: 1.0  # no runtime CFG: the base RF isn't omega-conditioned, so FD-loss does the
+                       # distribution-sharpening itself (matches the paper's JiT / text-to-image path).
+                       # Overrides the 3.5 inherited from the pretrained checkpoint's sampling block.

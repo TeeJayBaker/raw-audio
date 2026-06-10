@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from pathlib import Path
 from typing import Any
@@ -19,18 +20,27 @@ from data.audio_dataset import (
 )
 from data.augmentations import AugmentedDataset, build_waveform_augmenter
 from ema import EMA
-from emb.factory import build_embedding, build_embedding_backend
-from flow.fm import EPS, RectifiedFlow
+from emb.factory import build_embedding, build_embedding_backend, build_embeddings
+from flow.factory import build_method as build_flow_method
+from flow.fm import EPS
 from loggers import init_wandb, save_wavs, wandb_cfg, wandb_val_metrics
 from losses.audio import mr_stft_loss
+from losses.dist import FrechetLoss, compute_real_moments
 from validation import embedding_metric_cfg, generate_examples, validate_metrics
+
+FD_MOMENTS_DIR = Path("data/fd_moments")
 
 
 def _as_dict(cfg: DictConfig | dict[str, Any]) -> dict[str, Any]:
     return OmegaConf.to_container(cfg, resolve=True) if isinstance(cfg, DictConfig) else dict(cfg)
 
 
-def build_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader | None]:
+def _dataset_checksum(dataset: AudioDirectoryDataset) -> str:
+    identity = f"{dataset.root.resolve()}:{len(dataset)}"
+    return hashlib.sha256(identity.encode()).hexdigest()[:8]
+
+
+def build_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader | None, AudioDirectoryDataset]:
     """Variable-length audio loaders with bucketed batching and optional augmentation."""
     data_cfg = _as_dict(cfg.data)
     pool_multiplier = int(data_cfg.pop("bucket_pool_multiplier", 100))
@@ -77,7 +87,7 @@ def build_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader | None]:
         val_loader = DataLoader(
             val_set, batch_sampler=val_sampler, collate_fn=collate_audio_batch, **loader_cfg
         )
-    return train_loader, val_loader
+    return train_loader, val_loader, dataset
 
 
 class BaseTrainer:
@@ -105,7 +115,7 @@ class BaseTrainer:
         self.lift_scale = float(cfg.data.get("lift_scale", 3.0))
 
         self.logger = init_wandb(cfg, self.run_dir)
-        self.train_loader, self.val_loader = build_dataloaders(cfg)
+        self.train_loader, self.val_loader, self.dataset = build_dataloaders(cfg)
         self.model = build_backbone(cfg.backbone).to(self.device)
         self.conditioner = self._build_conditioner()
         self.method = self.build_method()
@@ -225,7 +235,8 @@ class BaseTrainer:
 
     # ---- paradigm hooks -------------------------------------------------------
     def build_method(self):
-        raise NotImplementedError
+        """The generative method, chosen from cfg (RF today, MF/others later)."""
+        return build_flow_method(self.cfg)
 
     def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
         raise NotImplementedError
@@ -334,9 +345,6 @@ class BaseTrainer:
 class RFTrainer(BaseTrainer):
     """Rectified-flow / flow-matching training: velocity loss + optional MR-STFT aux."""
 
-    def build_method(self) -> RectifiedFlow:
-        return RectifiedFlow()
-
     def _sample_t(self, audio: torch.Tensor) -> torch.Tensor:
         """Draw training timesteps. 'logit_normal' biases toward the middle of [0, 1]."""
         flow_cfg = self.cfg.get("flow", {}) or {}
@@ -387,3 +395,100 @@ class RFTrainer(BaseTrainer):
         )
         peak = audio.abs().amax(dim=tuple(range(1, audio.ndim)), keepdim=True).clamp_min(1e-8)
         return audio / peak
+
+
+class FDTrainer(RFTrainer):
+    """FD-loss post-training: differentiable 1-NFE generation matched to real audio in φ-space.
+
+    Inherits the backbone, flow method, sampling and conditioner from the pretrained checkpoint at
+    ``train.init_from`` (so RF/MF/… is reconstructed from the checkpoint, not restated), then
+    fine-tunes the generator alone against :class:`FrechetLoss`. Reuses ``RFTrainer.sample`` for
+    logging/validation and the whole ``BaseTrainer`` loop.
+    """
+
+    def __init__(self, cfg: DictConfig):
+        init_from = cfg.train.get("init_from")
+        if not init_from:
+            raise ValueError("FDTrainer requires train.init_from (a pretrained checkpoint).")
+        self._pretrained = torch.load(Path(init_from).expanduser(), map_location="cpu", weights_only=False)
+        base_cfg = OmegaConf.create(self._pretrained["cfg"])
+        # Inherit architecture/method/sampling/conditioner from the checkpoint; explicit FD-cfg wins.
+        inherited = {key: base_cfg[key] for key in ("backbone", "flow", "sampling", "conditioner") if key in base_cfg}
+        super().__init__(OmegaConf.merge(OmegaConf.create(inherited), cfg))
+
+        if self.step == 0:  # fresh fine-tune (not resuming an FD run): start from the pretrained weights
+            self.model.load_state_dict(self._pretrained["model"])
+            if self.ema is not None:
+                self.ema = EMA(self.model, decay=float(self.cfg.train.ema_decay))
+        del self._pretrained
+
+        fd_cfg = _as_dict(self.cfg.fd)
+        self.fd_conditional = bool(fd_cfg.get("conditional", True))
+        embedders = [
+            emb.to(self.device).eval()
+            for emb in build_embeddings(fd_cfg.get("embedders", []), self.device)
+        ]
+        self.fd_loss = FrechetLoss(
+            embedders,
+            self._real_moments(embedders),
+            mode=str(fd_cfg.get("mode", "ema")),
+            beta=float(fd_cfg.get("beta", 0.999)),
+            queue_size=int(fd_cfg.get("queue_size", 50000)),
+            c=float(fd_cfg.get("c", 1e-3)),
+            weights=fd_cfg.get("weights"),
+            sample_rate=self.sample_rate,
+        ).to(self.device)
+
+    def _real_moments(self, embedders) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        FD_MOMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        loader_cfg = _as_dict(self.cfg.train.dataloader)
+        batch_size = int(loader_cfg.pop("batch_size"))
+        loader_cfg.pop("drop_last", None)
+        reference_loader = DataLoader(
+            self.dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            collate_fn=collate_audio_batch,
+            **loader_cfg,
+        )
+        checksum = _dataset_checksum(self.dataset)
+        moments = []
+        for embedder in embedders:
+            path = FD_MOMENTS_DIR / f"{checksum}-{embedder.name}.pt"
+            if path.exists():
+                data = torch.load(path, map_location="cpu", weights_only=True)
+            else:
+                mu, cov = compute_real_moments(embedder, reference_loader, self.sample_rate)
+                data = {"mu": mu, "cov": cov}
+                torch.save(data, path)
+            moments.append((data["mu"], data["cov"]))
+        return moments
+
+    def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
+        shape = tuple(audio.shape)
+        gen_cond = cond if self.fd_conditional else None
+        sampling = self.cfg.sampling
+        with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.amp_enabled):
+            fake = self.method.generate(
+                self.model,
+                shape,
+                cond=gen_cond,
+                steps=int(sampling.get("steps", 1)),
+                method=str(sampling.get("method", "euler")),
+                guidance_scale=float(sampling.get("guidance_scale", 1.0)),
+                lift_scale=self.lift_scale if self.rms_lift else 1.0,
+            )
+        fake = fake.float()
+        peak = fake.abs().amax(dim=tuple(range(1, fake.ndim)), keepdim=True).clamp_min(1e-8)
+        # Generated batch is uniform full length (no padding) → match the dataset's peak-norm, embed
+        # without lengths. Real moments are precomputed, so the real audio isn't needed here.
+        return self.fd_loss(fake / peak)
+
+    def validate(self) -> dict[str, float]:
+        was_training = self.fd_loss.training
+        self.fd_loss.eval()  # freeze the moment-estimator population during validation
+        try:
+            return super().validate()
+        finally:
+            self.fd_loss.train(was_training)

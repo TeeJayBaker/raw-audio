@@ -11,7 +11,7 @@ The wiki is **a small set of dense concept pages, not a sprawl of narrow ones**.
 
 ## Per-paper notes live elsewhere
 
-Per-paper writeups go in `papers/`. The wiki links to them but doesn't duplicate them. If you want the full method breakdown of a single paper, read `papers/<slug>.md`.
+Per-paper writeups go in `wiki/papers/`. The wiki links to them but doesn't duplicate them. If you want the full method breakdown of a single paper, read `wiki/papers/<slug>.md`.
 
 ## Living-documents principle
 
@@ -24,7 +24,7 @@ Pages here **evolve continuously**. Whenever a new paper, experiment, or observa
 - A one-sentence purpose statement at the top — what question does this page answer?
 - Short prose synthesis of what's currently known.
 - Subsections / comparison tables where multiple methods can be tabled side-by-side.
-- Links to relevant `papers/<slug>.md` writeups.
+- Links to relevant `wiki/papers/<slug>.md` writeups.
 - Open questions / things we'd like to test.
 - A `last reviewed: YYYY-MM-DD` line.
 
