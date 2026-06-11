@@ -16,10 +16,9 @@ from emb.pann import PANNEmbedding
 from emb.random import RandomProjEmbedding
 from emb.vggish import VGGishEmbedding
 
-# Embedder protocol: each wrapper exposes ``embed(audio, sample_rate, audio_lengths) -> [B, D]``
-# (gradient-carrying, frozen params) and ``forward`` = ``no_grad(embed)`` for the metric/conditioner
-# paths, plus attributes ``embedding_dim``, ``input_sample_rate``, and ``name``. FD-loss calls
-# ``embed``; metrics/conditioning call ``forward``.
+# Embedder protocol: each wrapper exposes ``embed(audio, sample_rate, audio_lengths) -> [N, D]``
+# (gradient-carrying, frozen params), where N is usually clips but may be frames for local
+# representations such as EnCodec. ``forward`` = ``no_grad(embed)`` for metric/conditioner paths.
 _EMBEDDINGS: dict[str, type[nn.Module]] = {
     "audiomae": AudioMAEEmbedding,
     "clap": CLAPEmbedding,

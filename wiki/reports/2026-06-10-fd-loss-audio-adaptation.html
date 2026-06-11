@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adapting FD-loss to audio — why the naive port fails on drum one-shots</title>
+<style>
+  :root {
+    --paper:#faf7f2; --ink:#21201c; --mut:#6e6a61; --line:#e3ded4;
+    --accent:#9a3b26;          /* oxblood */
+    --accent-soft:#f3e6e0;
+    --teal:#1f6f6b; --teal-soft:#e3efee;
+    --code-bg:#f1ede4;
+    --bad:#a33327; --good:#2c6e49;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--paper); }
+  body {
+    font:17px/1.65 Charter, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    color:var(--ink); max-width:780px; margin:0 auto; padding:56px 24px 80px;
+  }
+  .kicker {
+    font:600 .72rem/1 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    letter-spacing:.18em; text-transform:uppercase; color:var(--accent); margin-bottom:14px;
+  }
+  h1 { font-size:2.0rem; line-height:1.18; margin:0 0 .35em; font-weight:700; letter-spacing:-.01em; }
+  .sub { color:var(--mut); font-size:.95rem; margin:0 0 2.2em; }
+  .sub code { font-size:.85em; }
+  h2 {
+    font-size:1.28rem; margin:2.6em 0 .6em; padding-top:1.1em; border-top:1px solid var(--line);
+    font-weight:700; letter-spacing:-.005em;
+  }
+  h2 .n {
+    font:700 .78rem/1 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    color:var(--accent); letter-spacing:.14em; display:block; margin-bottom:.55em;
+  }
+  h3 { font-size:1.02rem; margin:1.7em 0 .4em; font-weight:700; }
+  p { margin:.65em 0; }
+  ul, ol { margin:.65em 0; padding-left:1.4em; }
+  li { margin:.3em 0; }
+  strong { font-weight:700; }
+  code {
+    font:.84em/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background:var(--code-bg); padding:1px 5px; border-radius:3px;
+  }
+  table {
+    border-collapse:collapse; width:100%; margin:1em 0 1.3em;
+    font:.84rem/1.5 -apple-system, "Segoe UI", Helvetica, sans-serif;
+  }
+  th, td { padding:7px 9px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+  thead th {
+    border-bottom:2px solid #cdc6b8; font-size:.72rem; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--mut);
+  }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .key {
+    background:var(--accent-soft); border-left:3px solid var(--accent);
+    padding:.85em 1.1em; margin:1.4em 0; border-radius:0 4px 4px 0;
+  }
+  .key .t {
+    font:700 .7rem/1 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--accent);
+    display:block; margin-bottom:.5em;
+  }
+  .aside {
+    background:var(--teal-soft); border-left:3px solid var(--teal);
+    padding:.85em 1.1em; margin:1.4em 0; border-radius:0 4px 4px 0; font-size:.94rem;
+  }
+  .aside .t {
+    font:700 .7rem/1 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--teal);
+    display:block; margin-bottom:.5em;
+  }
+  figure { margin:1.6em 0; }
+  figcaption {
+    color:var(--mut); font:.82rem/1.5 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    margin-top:.55em;
+  }
+  .toc {
+    font:.88rem/1.9 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    column-count:2; column-gap:2.5em; margin:1.4em 0 0; padding:1em 0 1.4em; border-bottom:1px solid var(--line);
+  }
+  .toc a { color:var(--ink); text-decoration:none; }
+  .toc a:hover { color:var(--accent); }
+  .toc .n { color:var(--accent); font-weight:700; margin-right:.5em; }
+  a { color:var(--accent); }
+  .foot {
+    color:var(--mut); font:.82rem/1.7 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    margin-top:3em; border-top:1px solid var(--line); padding-top:1.2em;
+  }
+  .mono { font-variant-numeric:tabular-nums; }
+  .small { font-size:.9rem; color:var(--mut); }
+  @media print { body { padding-top:0; } }
+</style>
+</head>
+<body>
+
+<div class="kicker">raw-audio · post-training · report</div>
+<h1>Adapting FD-loss to audio: why the naive port fails on drum one-shots, and what to change</h1>
+<p class="sub">2026-06-10 · grounded in <code>runs/fd-finetune</code> (PANN + AudioMAE + CLAP critics over the
+<code>stft-b64-200k</code> base) and the FD-loss paper
+(<a href="https://arxiv.org/abs/2604.28190">arXiv 2604.28190</a>) · covers the three observed symptoms,
+the audio-specific theory, a revised recipe, and the capacity-at-fixed-latency question.</p>
+
+<nav class="toc">
+  <div><span class="n">1</span><a href="#standing">Where the recipe stands</a></div>
+  <div><span class="n">2</span><a href="#breaks">What the paper assumes that audio breaks</a></div>
+  <div><span class="n">3</span><a href="#symptoms">The three symptoms, mechanistically</a></div>
+  <div><span class="n">4</span><a href="#fdv2">FD-v2: the adapted recipe</a></div>
+  <div><span class="n">5</span><a href="#capacity">Capacity levers at fixed latency</a></div>
+  <div><span class="n">6</span><a href="#plateau">The 100k plateau in this light</a></div>
+  <div><span class="n">7</span><a href="#ladder">Experiment ladder</a></div>
+  <div><span class="n">8</span><a href="#risks">Risks, fallbacks, open questions</a></div>
+</nav>
+
+<div class="key">
+<span class="t">TL;DR</span>
+<p style="margin-top:0">The FD-loss <em>machinery</em> in <code>losses/dist.py</code> is a faithful port
+(EMA-decoupled moments, self-normalised multi-critic aggregation, precomputed Σ<sub>r</sub><sup>½</sup>).
+What failed is the <em>measurement</em>: all three critics factor through log-mel <strong>magnitude</strong>,
+are blind above 14&nbsp;kHz (8&nbsp;kHz for AudioMAE), and pool a 100&nbsp;ms–2&nbsp;s event into one vector
+sized for 10&nbsp;s clips. FD-loss optimises the generator <em>into that joint null space</em> — phase
+coherence is exactly where a 1-NFE STFT-domain model is weakest, so the 93.75&nbsp;Hz frame-rate buzz is the
+predictable result, not a fluke. On top of that, the statistics were far off the paper's operating point
+(gradient batch 24 vs 1024, no warm-start, and — now fixed — 1,000 reference embeddings for a 2048-dim
+critic). The fix is not to abandon FD-loss; it is (1)&nbsp;a critic ensemble that spans
+<em>waveform-domain</em> features (EnCodec frames, MERT) plus one semantic mel critic (CLAP),
+(2)&nbsp;weak per-sample anchors so the marginal-matching loss cannot trade away identity or
+STFT consistency, and (3)&nbsp;paper-faithful statistics (warm-start, grad-accum, full-population reference).</p>
+</div>
+
+<h2 id="standing"><span class="n">SECTION 1</span>Where the recipe stands</h2>
+
+<p><strong>The base.</strong> <code>fm-oneshots-mars-stft-b64-200k</code>: rectified flow on raw waveform,
+x-prediction with v-space MSE, the backbone a d512&nbsp;/&nbsp;12-layer transformer (54.6&nbsp;M) operating on
+complex-STFT frames (<code>n_fft 2048, hop 512, win 2048</code> @ 48&nbsp;kHz; real/imag channelised to
+2&nbsp;×&nbsp;1025&nbsp;=&nbsp;2050 channels per frame, one token per frame). Noise is added in the waveform
+domain; since the STFT is linear this is equivalent to noising in STFT space with a correlated complex
+Gaussian, so the formulation is sound. The model returns a complex STFT and ISTFTs it inside
+<code>forward</code>, so the pretraining v-MSE was computed <em>on waveforms</em> — a detail that matters in
+§3.1. Plateaued around 100k steps; the 100k checkpoint is the FD init.</p>
+
+<p><strong>The post-train.</strong> <code>FDTrainer</code> reproduces the paper's shape: 1-NFE generation
+(one Euler step from t≈0, i.e. the model's x-prediction from pure noise), peak-norm, then Fréchet distance
+to precomputed real moments in each frozen critic space, with the
+<code>FD<sub>i</sub>&nbsp;/&nbsp;sg(FD<sub>i</sub>+c)</code> self-normalisation and EMA-decoupled generated
+moments. Conditioning (MATPAC) is kept; guidance is dropped from the base's 3.5 to 1.0, matching the
+paper's CFG-free path.</p>
+
+<p><strong>Observed.</strong> Perceptual quality degrades over FD post-training; some examples change
+identity entirely; a strong periodic artifact appears at 93.75&nbsp;Hz — which is exactly
+48,000&nbsp;/&nbsp;512, the frame rate of the generator's own STFT hop. And the original run estimated the
+real moments from only 1,000 clips (since fixed to the full ~122k corpus).</p>
+
+<table>
+<thead><tr><th>Axis</th><th>FD-loss paper (ImageNet-256)</th><th>Our FD run</th><th>Consequence</th></tr></thead>
+<tbody>
+<tr><td>Gradient batch</td><td>1024</td><td>24 (<code>grad_accum 1</code>)</td><td>~43× noisier moment gradients</td></tr>
+<tr><td>Generated-moment init</td><td>warm-start from 50k base samples</td><td>first batch (24 samples)</td><td>early steps chase garbage statistics</td></tr>
+<tr><td>Reference moments</td><td>full train set (1.28M)</td><td>1,000 → now ~122k</td><td>was: rank-deficient Σ<sub>r</sub>, biased target</td></tr>
+<tr><td>Critics</td><td>6 nets <em>consuming raw pixels</em>, mixed invariances</td><td>3 nets all consuming <em>log-mel magnitude</em></td><td>large <strong>shared</strong> null space (§2)</td></tr>
+<tr><td>Base conditioning</td><td>class-conditional, strong adherence</td><td>MATPAC cond, modest adherence, listened-to at CFG 3.5</td><td>identity drift is unconstrained (§3.2)</td></tr>
+<tr><td>Data</td><td>1.28M images</td><td>~122k clips</td><td>tighter moment-estimation budget</td></tr>
+<tr><td>LR</td><td>1e-5 (JiT) / 1e-6 (pMF, iMF)</td><td>1e-5</td><td>reasonable</td></tr>
+</tbody>
+</table>
+
+<p>The encouraging datapoint from the paper: a 50-step JiT-L whose naive 1-step output is unusable
+(FID 291.6) post-trains to FID 0.77 at 1-NFE. <strong>A weak 1-NFE starting point is not disqualifying.</strong>
+The gap to close is in the critics and the statistics, not in the base model's 1-step quality.</p>
+
+<h2 id="breaks"><span class="n">SECTION 2</span>What the paper assumes that audio breaks</h2>
+
+<p>FD-loss works in images because the critic ensemble's null space — the set of generator changes the loss
+cannot see — happens to contain almost nothing perceptually salient. Six different networks consuming raw
+pixels have only <em>learned</em> invariances, and they disagree about them, so the intersection is small.
+The audio port violates this on four independent axes.</p>
+
+<h3>2.1 Phase invariance is structural, not learned</h3>
+<p>PANN, AudioMAE and CLAP-HTSAT all compute a log-mel <em>magnitude</em> spectrogram as their first layer.
+Phase is discarded before any weights are applied. This is not an invariance the ensemble happened to learn —
+it is hard-wired into all three critics identically, so ensembling does not shrink it. Everything that lives
+in per-bin phase is invisible: transient sharpness, inter-frame phase coherence (= STFT consistency, §3.1),
+comb/dispersion artifacts. For percussion, which is transient-dominated, the perceptually critical axis is
+almost entirely inside the joint null space. Images have no analogue: there is no canonical lossy transform
+that every image network applies before its first conv.</p>
+
+<h3>2.2 The ensemble is band-limited far below the generator</h3>
+<p>The generator works at 48&nbsp;kHz (content to 24&nbsp;kHz). The critics resample down and cut off their
+mel banks well below that: AudioMAE sees ≤8&nbsp;kHz (16&nbsp;kHz input), PANN and CLAP ≤14&nbsp;kHz
+(<code>fmax 14000</code>). The 14–24&nbsp;kHz octave — cymbal and hi-hat sizzle, attack air — is
+<strong>completely unconstrained</strong> by the FD objective, and 8–14&nbsp;kHz is covered by only two of
+three critics. During pretraining the waveform-domain v-MSE constrained the full band; FD post-training
+removed that constraint and replaced it with nothing above 14&nbsp;kHz.</p>
+
+<figure>
+<svg viewBox="0 0 680 250" width="100%" font-family="-apple-system,Segoe UI,Helvetica,sans-serif" role="img" aria-label="Frequency coverage of each critic vs the generator band">
+  <defs>
+    <pattern id="hatch" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <rect width="6" height="6" fill="#f3e6e0"/><line x1="0" y1="0" x2="0" y2="6" stroke="#d9b3a6" stroke-width="1.6"/>
+    </pattern>
+  </defs>
+  <!-- axis: 0..24 kHz mapped to x 150..640 -->
+  <g font-size="11" fill="#6e6a61">
+    <line x1="150" y1="210" x2="640" y2="210" stroke="#cdc6b8"/>
+    <g text-anchor="middle">
+      <text x="150" y="226">0</text><text x="252" y="226">5k</text><text x="354" y="226">10k</text>
+      <text x="436" y="226">14k</text><text x="558" y="226">20k</text><text x="640" y="226">24k</text>
+    </g>
+    <text x="640" y="244" text-anchor="end" font-size="10">frequency (Hz, linear)</text>
+  </g>
+  <line x1="436" y1="28" x2="436" y2="210" stroke="#d9b3a6" stroke-dasharray="3 3"/>
+  <line x1="313" y1="28" x2="313" y2="210" stroke="#d9b3a6" stroke-dasharray="3 3"/>
+  <!-- 8k = 150 + 8/24*490 = 313 ; 14k = 436 -->
+  <g font-size="11.5">
+    <!-- generator -->
+    <text x="142" y="46" text-anchor="end" fill="#21201c" font-weight="700">generator @48k</text>
+    <rect x="150" y="36" width="490" height="12" rx="2" fill="#21201c" opacity=".85"/>
+    <!-- current critics -->
+    <text x="142" y="76" text-anchor="end" fill="#9a3b26">CLAP (mel-mag)</text>
+    <rect x="151" y="66" width="285" height="12" rx="2" fill="#9a3b26" opacity=".75"/>
+    <rect x="436" y="66" width="204" height="12" rx="2" fill="url(#hatch)"/>
+    <text x="142" y="101" text-anchor="end" fill="#9a3b26">PANN (mel-mag)</text>
+    <rect x="151" y="91" width="285" height="12" rx="2" fill="#9a3b26" opacity=".75"/>
+    <rect x="436" y="91" width="204" height="12" rx="2" fill="url(#hatch)"/>
+    <text x="142" y="126" text-anchor="end" fill="#9a3b26">AudioMAE (mel-mag)</text>
+    <rect x="150" y="116" width="163" height="12" rx="2" fill="#9a3b26" opacity=".75"/>
+    <rect x="313" y="116" width="327" height="12" rx="2" fill="url(#hatch)"/>
+    <!-- proposed -->
+    <text x="142" y="156" text-anchor="end" fill="#1f6f6b">EnCodec-48k (waveform)</text>
+    <rect x="150" y="146" width="490" height="12" rx="2" fill="#1f6f6b" opacity=".8"/>
+    <text x="142" y="181" text-anchor="end" fill="#1f6f6b">MERT (waveform @24k)</text>
+    <rect x="150" y="171" width="245" height="12" rx="2" fill="#1f6f6b" opacity=".8"/>
+    <text x="142" y="206" text-anchor="end" fill="#1f6f6b">MSS log-mag anchor</text>
+    <rect x="150" y="196" width="490" height="12" rx="2" fill="#1f6f6b" opacity=".45"/>
+  </g>
+  <text x="538" y="60" font-size="10.5" fill="#9a3b26" text-anchor="middle">unconstrained by FD</text>
+</svg>
+<figcaption><strong>Fig. 1 — Band coverage.</strong> The current critic ensemble (red) is jointly blind above
+14&nbsp;kHz and only one-of-three covers 8–14&nbsp;kHz; all of it is magnitude-only. The proposed additions
+(teal) consume raw waveforms, restoring phase sensitivity and (EnCodec) full-band coverage. Hatched =
+invisible to that critic.</figcaption>
+</figure>
+
+<h3>2.3 Ten-second critics, tenth-of-a-second events</h3>
+<p>All three critics were trained on ~10&nbsp;s AudioSet-style clips, and the wrappers make a one-shot fit
+that mould: AudioMAE zero-pads its fbank to 1024 frames (10.24&nbsp;s) and mean-pools over <em>all</em> patch
+tokens — a 24,000-sample hit at 16&nbsp;kHz occupies ~150 of 1024 frames, so ~85% of the pooled embedding is
+padding response; CLAP <em>repeat-pads</em> to 480,000 samples, i.e. tiles a kick into a 10&nbsp;s loop;
+PANN handles native lengths (with a 10,560-sample floor) but global-pools over time internally. In every
+case the fine temporal structure that distinguishes a good transient from a smeared one is averaged into a
+few coordinates of a clip-level vector. The image analogue would be evaluating 32×32 thumbnails embedded in
+a 512×512 grey canvas — the metric mostly measures the canvas.</p>
+
+<h3>2.4 The statistics were off the paper's operating point</h3>
+<ul>
+<li><strong>Reference side (was).</strong> 1,000 embeddings for a 2048-dim critic (PANN) gives a
+rank-deficient Σ̂<sub>r</sub>; FAD's small-sample bias scales like O(D/n) (the motivation for
+FAD<sub>∞</sub>, Gui et&nbsp;al. ICASSP 2024). The optimisation target itself was wrong. Fixed — moments now
+come from the full ~122k corpus.</li>
+<li><strong>Generated side.</strong> EMA with β=0.999 holds an effective population of roughly
+1/(1−β)&nbsp;×&nbsp;B ≈ 24k exponentially-weighted samples — borderline for D=2048 — and it was initialised
+from the <em>first batch of 24</em>, so early FD values and gradients tracked a fantasy distribution for the
+first thousands of steps. The paper warm-starts from 50k pre-generated samples.</li>
+<li><strong>Gradient batch.</strong> 24 vs the paper's 1024. The gradient flows through the current batch's
+contribution to μ and Σ; at B=24 in 512–2048-dim spaces this is extremely noisy. A noisy distribution-level
+reward behaves like a drifting target — it pushes the generator around without pinning it anywhere, which
+compounds the identity drift of §3.2.</li>
+</ul>
+
+<div class="aside">
+<span class="t">Gaussian assumption, noted for later</span>
+The drum one-shot manifold is strongly multimodal in any semantic space (kicks / snares / hats / cymbals
+form separated clusters), and CLAP embeddings are L2-normalised onto a sphere. Matching first and second
+moments of a Gaussian is a crude summary of that geometry. The paper inherits the same assumption and works
+anyway, so this is not the first-order problem — but it is the reason KAD-style MMD (unbiased,
+distribution-free, small-batch-friendly; <a href="https://arxiv.org/abs/2502.15602">arXiv 2502.15602</a>)
+is queued as an experiment rather than dismissed, and why per-class (bucketed) moments are a cheap option if
+folder labels are usable.
+</div>
+
+<h2 id="symptoms"><span class="n">SECTION 3</span>The three symptoms, mechanistically</h2>
+
+<h3>3.1 The 93.75 Hz artifact is OLA inconsistency at the frame rate — and FD-loss unleashed it</h3>
+<p>The generator emits one complex frame per token and the frames overlap 4× (hop 512, win 2048). A set of
+overlapping complex frames is <em>consistent</em> — i.e. is actually the STFT of some waveform — only if the
+overlapping regions agree. Nothing in the architecture enforces that; <code>torch.istft</code> resolves
+disagreements by least-squares overlap-add. The residual disagreement shows up as hop-periodic amplitude
+modulation: a buzz at exactly 48,000/512 = 93.75&nbsp;Hz, with sidebands at ±93.75&nbsp;Hz around every
+partial. Calling it "aliasing" undersells how specific it is — it is the signature of inconsistent STFT
+frames, the same artifact family Griffin-Lim-style consistency projections exist to fix.</p>
+
+<figure>
+<svg viewBox="0 0 680 190" width="100%" font-family="-apple-system,Segoe UI,Helvetica,sans-serif" role="img" aria-label="Overlap-add of inconsistent frames produces hop-periodic modulation">
+  <g font-size="11" fill="#6e6a61">
+    <text x="10" y="18" font-weight="700" fill="#21201c">predicted frames (hop 512, win 2048)</text>
+    <text x="392" y="18" font-weight="700" fill="#21201c">after least-squares OLA</text>
+  </g>
+  <!-- overlapping hann humps, slightly mismatched heights/phases -->
+  <g stroke-width="1.8" fill="none">
+    <path d="M14,120 Q54,40 94,120" stroke="#9a3b26" opacity=".85"/>
+    <path d="M54,120 Q94,52 134,120" stroke="#c97f4f" opacity=".85"/>
+    <path d="M94,120 Q134,36 174,120" stroke="#9a3b26" opacity=".85"/>
+    <path d="M134,120 Q174,58 214,120" stroke="#c97f4f" opacity=".85"/>
+    <path d="M174,120 Q214,42 254,120" stroke="#9a3b26" opacity=".85"/>
+    <path d="M214,120 Q254,52 294,120" stroke="#c97f4f" opacity=".85"/>
+  </g>
+  <g font-size="10.5" fill="#9a3b26">
+    <text x="154" y="140" text-anchor="middle">overlaps disagree (phase ≠ consistent)</text>
+  </g>
+  <!-- arrow -->
+  <g stroke="#6e6a61" fill="#6e6a61">
+    <line x1="312" y1="85" x2="368" y2="85" stroke-width="1.6"/>
+    <path d="M368,85 l-9,-5 v10 z"/>
+  </g>
+  <text x="340" y="74" font-size="10.5" fill="#6e6a61" text-anchor="middle">ISTFT</text>
+  <!-- rippled envelope: scallops every 40px -->
+  <g fill="none" stroke="#21201c" stroke-width="1.8">
+    <path d="M392,85
+      q10,-26 20,0 q10,22 20,0 q10,-26 20,0 q10,22 20,0
+      q10,-26 20,0 q10,22 20,0 q10,-26 20,0 q10,22 20,0
+      q10,-26 20,0 q10,22 20,0 q10,-26 20,0 q10,22 20,0" opacity=".9"/>
+  </g>
+  <g stroke="#9a3b26" stroke-dasharray="3 3">
+    <line x1="412" y1="48" x2="412" y2="118"/><line x1="492" y1="48" x2="492" y2="118"/>
+  </g>
+  <g font-size="10.5" fill="#9a3b26">
+    <text x="452" y="40" text-anchor="middle">period = 512 samples → 93.75 Hz line + sidebands</text>
+  </g>
+  <text x="392" y="168" font-size="10.5" fill="#6e6a61">mel-magnitude critics + 10 s temporal pooling ≈ blind to this; ears are not.</text>
+</svg>
+<figcaption><strong>Fig. 2 — The buzz mechanism.</strong> Per-frame predictions that disagree in their
+overlaps survive ISTFT as hop-periodic amplitude modulation. The hop is 512 samples, hence 93.75&nbsp;Hz at
+48&nbsp;kHz.</figcaption>
+</figure>
+
+<p>Why now and not during pretraining? Because pretraining computed its loss on the <em>waveform</em> after
+ISTFT — inconsistent frames produce waveform error, so consistency was implicitly trained in. FD post-training
+deleted that term and replaced it with critics that cannot see the buzz (magnitude front-ends, §2.1;
+temporal pooling, §2.3; and the sidebands sit partially inside mel-bin bandwidths). Worse, the 1-NFE
+operating point is precisely where phase commitment is weakest: the model's x-prediction from pure noise is
+a conditional mean, and averaging over phase is what conditional means do. FD-loss then sharpened the
+<em>magnitude</em> statistics the critics report while leaving phase free to satisfy them in the cheapest
+way — which is incoherently.</p>
+
+<h3>3.2 Identity changes: FD is a marginal loss, and the safety rails were removed</h3>
+<p>The Fréchet distance compares <em>unpaired distributions</em>. Nothing in the objective says "the sample
+generated for cond<sub>i</sub> should sound like clip<sub>i</sub>" — only that the cloud of generated
+embeddings should match the real cloud. In the paper this doesn't bite because the base model's class
+adherence is strong and the FD gradient (at LR 1e-6–1e-5, B=1024) has no incentive to re-shuffle the
+conditional mapping. Here three things compound:</p>
+<ul>
+<li>The base's conditional adherence is modest to begin with (the capacity-sweep probes put sampled identity
+at CLAP-own ≈ 0.6, retrieval ≈ 27% in the overfit regime).</li>
+<li>The FD run generates and logs at <strong>guidance 1.0</strong> while every base sample previously
+listened to was at <strong>guidance 3.5</strong> — part of the perceived "examples completely changed" is
+the guidance swap, independent of FD. Any before/after comparison must hold guidance fixed.</li>
+<li>At B=24 the moment gradient is noise-dominated (§2.4), and a noisy distribution-matching force applied
+to a weakly-pinned conditional mapping performs a random walk on identity.</li>
+</ul>
+
+<h3>3.3 Overall degradation: optimising into the null space, toward a (then-)wrong target</h3>
+<p>Combine §2 and the above: the loss rewarded moving mel-magnitude moments toward a reference that (until
+the fix) was itself biased rank-deficient junk, with gradients sampled at 1/43rd the paper's batch, while
+everything perceptually load-bearing for drums — transient phase, the top octave, fine temporal envelope —
+was free to degrade. The surprise would have been the run <em>working</em>.</p>
+
+<h2 id="fdv2"><span class="n">SECTION 4</span>FD-v2: the adapted recipe</h2>
+
+<h3>4.1 Critic ensemble: span the null space, don't triple-cover one subspace</h3>
+<p>The paper's lesson is that the <em>set</em> of representations matters more than any single one. The audio
+translation is not "find three audio nets" but "find nets whose <em>front-ends</em> disagree". Proposed
+training set:</p>
+
+<table>
+<thead><tr><th>Critic</th><th>Front-end</th><th>Band</th><th>Frames/s</th><th>Dim</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><strong>CLAP</strong> (music HTSAT) — keep</td><td>log-mel magnitude</td><td>50&nbsp;Hz–14&nbsp;kHz</td><td class="num">100</td><td class="num">512</td><td>semantics / timbre classes (SigLIP-analog)</td></tr>
+<tr><td><strong>EnCodec-48k encoder</strong> — add</td><td>raw waveform convs</td><td>0–24&nbsp;kHz</td><td class="num">150</td><td class="num">128</td><td>phase, transients, full band, codec-grade detail</td></tr>
+<tr><td><strong>MERT-95M</strong> — add</td><td>raw waveform convs @24&nbsp;kHz</td><td>0–12&nbsp;kHz</td><td class="num">75</td><td class="num">768</td><td>music-SSL mid-level structure with a phase-sensitive front-end</td></tr>
+<tr><td>PANN, AudioMAE — <strong>demote to eval-only</strong></td><td>log-mel magnitude</td><td>≤14k / ≤8k</td><td class="num">100</td><td class="num">2048/768</td><td>held-out metrics (Inception/MAE analogs), §4.4</td></tr>
+</tbody>
+</table>
+
+<p>Two upgrades to how features become distributions:</p>
+<ul>
+<li><strong>Frame-level FD for EnCodec (and optionally MERT).</strong> Mean-pooling EnCodec's
+[B,&nbsp;128,&nbsp;T′] latents to 128-d throws away exactly the temporal structure we added it for. Treat
+frames as the population instead: a batch of 24 one-second clips yields ~3,600 samples in 128-d — a far
+better-conditioned moment estimate than 24 samples in 2048-d, and it makes the loss sensitive to
+<em>local</em> texture (the buzz is flagrant at frame level). This is the audio analogue of computing FD
+over patch tokens. Cheap variant if memory bites: subsample frames per clip.</li>
+<li><strong>Two-moment pooling where clip-level vectors are kept</strong> (concat mean and std over time)
+so a steady low-level artifact at least perturbs the std coordinates instead of vanishing into the mean.</li>
+</ul>
+
+<div class="aside">
+<span class="t">Why not MATPAC as a critic</span>
+It is the conditioner and the identity-retrieval eval space. Training the generator to match moments in the
+same space we use to measure conditioning is Goodhart by construction — improvements would be unfalsifiable.
+Keep MATPAC for conditioning and eval only. (A <em>paired</em> MATPAC anchor is different — §4.2 — because
+it is per-sample supervision toward the given cond, not distribution matching in the eval space; report it
+as a training term, never as evidence.)
+</div>
+
+<h3>4.2 Anchors: weak per-sample rails so the marginal loss can't pay in identity or consistency</h3>
+<p>FD-loss stays the lead objective; the anchors below are small-weight insurance, each targeting one
+diagnosed failure. All are available in <code>training_step</code> already (the real batch and its conds are
+in scope):</p>
+<ol>
+<li><strong>RF keep-alive</strong> (λ ≈ 0.05–0.2): keep computing the pretraining v-MSE on the same batch.
+This is the cheapest full-band, phase-sensitive, paired constraint — it is exactly the term whose removal
+let the buzz in — and the paper frames FD-loss as complementary to existing recipes. It does reintroduce a
+regression-to-mean force, hence the small weight: enough to forbid leaving the base's waveform manifold,
+not enough to fight FD's sharpening.</li>
+<li><strong>MSS log-magnitude anchor</strong> (alternative or complement to 1): <code>mr_stft_loss</code>
+with <code>log_weight&nbsp;&gt;&nbsp;0</code> between the 1-NFE output for cond<sub>i</sub> and clip<sub>i</sub>.
+Log-magnitude, multi-resolution, full-band; per the project's own read of PeriodWave-Turbo, avoid raw
+complex/linear STFT L1 (phase-error gradients mislead) — the implemented spectral-convergence + log-mag form
+is the right one.</li>
+<li><strong>Cond-cycle anchor</strong> (λ small): cosine(MATPAC(G(z,&nbsp;c)),&nbsp;c). Directly pins
+identity without referencing the paired waveform, so it tolerates legitimate within-cond variation better
+than (2). MATPAC's <code>embed()</code> is not wrapped in <code>no_grad</code>, so the graph is available.</li>
+<li><strong>STFT-consistency penalty</strong> (targeted buzz killer): ‖S&nbsp;−&nbsp;STFT(ISTFT(S))‖ on the
+predicted complex frames — unsupervised, one extra STFT, zero inference cost. Necessary-not-sufficient
+(consistency ≠ quality), but it removes the §3.1 mechanism at the source rather than asking critics to
+detect its symptom.</li>
+</ol>
+<p>Recommended starting combination: (1)&nbsp;or&nbsp;(2) + (3), with (4) held in reserve if the buzz
+survives the critic swap.</p>
+
+<h3>4.3 Statistics: run the paper's operating point, not a 1/43-scale sketch</h3>
+<ul>
+<li><strong>Warm-start the generated moments</strong>: sample ~25–50k clips from the frozen init checkpoint
+once, initialise each <code>MomentEstimator</code>'s m1/m2 from them (paper-faithful; removes the
+first-batch fantasy period).</li>
+<li><strong>Grad-accum ≥ 8.</strong> In EMA mode the population moments barely move within an optimiser
+step, so accumulated micro-batches approximate one large gradient batch — effective B ≈ 192–768 is
+reachable on the same 24&nbsp;GB card. This is the single cheapest fidelity gain to the paper.</li>
+<li><strong>Critic round-robin</strong> if VRAM blocks batch growth (MATPAC + 3 critics co-resident is what
+capped the micro-batch at ~30): sample one or two critics per step. The self-normalised sum makes the
+expected gradient the same; each critic's EMA just updates on its own steps. Spend the freed memory on
+batch.</li>
+<li><strong>Reference moments</strong>: full corpus (done). For 2048-dim eval critics, prefer KAD for
+<em>reporting</em> regardless, since it is unbiased at small n.</li>
+<li><strong>Hold guidance fixed across comparisons</strong> (base vs FD, both at 1.0 or both at 3.5), or the
+listening test measures CFG, not FD.</li>
+</ul>
+
+<h3>4.4 Evaluation: held-out spaces or it didn't happen</h3>
+<p>Anything used as a training critic is disqualified as a metric. Dashboard:</p>
+<ul>
+<li><strong>KAD on held-out embedders</strong> (PANN, AudioMAE, VGGish) — unbiased, Gaussian-free.</li>
+<li><strong>MATPAC retrieval / own-cosine</strong> — the identity-drift detector.</li>
+<li><strong>Frame-rate line ratio</strong> — a purpose-built artifact meter: PSD of the energy envelope,
+energy in 93.75&nbsp;±&nbsp;2&nbsp;Hz over the neighbouring band. Cheap, quantitative, directly tracks the
+§3.1 mechanism through training. Lives in <code>experiments/</code> first.</li>
+<li><strong>genRMS and per-band (0–8k / 8–14k / 14–24k) energy vs reals</strong> — catches both energy
+collapse and "free octave" garbage.</li>
+<li><strong>Listening AB at matched guidance</strong> — the only ceiling-free metric; FD-v6-style critic
+stacks still need human ears (the paper's own human study is the final word there too).</li>
+</ul>
+
+<h2 id="capacity"><span class="n">SECTION 5</span>Capacity levers at fixed latency</h2>
+
+<p>The latency budget is defined by CPU single-shot inference (project headline; the wiki's calibrated
+points: Vocos-class hop-rate stacks run ≫ real-time on CPU, sample-rate stacks mostly don't). The backbone
+already sits in the right family — hop-rate tokens, 1-NFE endgame. Sequence lengths are tiny:
+≈94 tokens per 48k-second (hop 512), 188 for the 2&nbsp;s cap. Attention is a rounding error; GEMM width is
+everything. That shapes the levers:</p>
+
+<table>
+<thead><tr><th>Lever</th><th>FLOPs ×</th><th>What it buys</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td><strong>Width d512→d768 (L12)</strong></td><td class="num">≈2.1</td><td>fitting headroom, proven</td><td>capacity probe: d768 still improving, real run not saturated; 110&nbsp;M params</td></tr>
+<tr><td>Width d512→d1024 (L12)</td><td class="num">≈3.9</td><td>more of the same</td><td>~160&nbsp;M; still ≈30&nbsp;GFLOP per generated second — Flow2GAN-class cost</td></tr>
+<tr><td>Depth L12→L16 (d512)</td><td class="num">≈1.33</td><td>weaker per-FLOP than width here</td><td>depth also serialises on CPU; prefer width first</td></tr>
+<tr><td><strong>Frequency-banded tokens</strong> (e.g. 8 bands × d256)</td><td class="num">≈2</td><td>removes the per-frame channel squeeze; 2-D structure</td><td>RFWave-style; 8×94=752 tokens is still trivial for attention</td></tr>
+<tr><td>Hop 512→256</td><td class="num">≈2</td><td>2× temporal resolution; OLA consistency easier (8× overlap); artifact moves to 187.5&nbsp;Hz</td><td>tokens ×2; interacts with §3.1 favourably</td></tr>
+<tr><td><strong>Compressed complex STFT</strong> (|X|<sup>α</sup>e<sup>jφ</sup>, α≈0.3–0.5)</td><td class="num">1.0</td><td>equalises per-bin SNR/dynamic range; free at inference</td><td>flow runs in compressed space; standard in complex-spectral speech models</td></tr>
+<tr><td><strong>MSS aux during pretrain</strong> (<code>mr_stft_weight&gt;0, log_weight&gt;0</code>)</td><td class="num">1.0*</td><td>log-domain full-band supervision; counters linear-power bias</td><td>*training-time only; already implemented, currently disabled</td></tr>
+<tr><td>compile / bf16 / int8</td><td class="num">—</td><td>recovers the multiplier spent above</td><td>engineering, orthogonal</td></tr>
+</tbody>
+</table>
+
+<p>Two structural observations worth keeping:</p>
+<ul>
+<li><strong>The token-width squeeze is real but borderline, and the probe agrees.</strong> Each frame is
+2050 reals squeezed through a d512 projection. At 4× overlap, only ~512 <em>new</em> samples arrive per hop,
+so 512 dims roughly matches the information rate — which is why d512 works at all and why d768 helps without
+transforming: the model needs width beyond pass-through to carry signal + noise + computation
+simultaneously. Width (or frequency-banding, which attacks the same squeeze sideways) is the principled
+first lever, not depth.</li>
+<li><strong>The loss currently weights bins by linear power.</strong> Waveform/v-space MSE ≡ (Parseval)
+linear-spectral MSE: a kick fundamental at −6&nbsp;dBFS outweighs a hi-hat's 12&nbsp;kHz sizzle at
+−40&nbsp;dBFS by three orders of magnitude, while perception is roughly log in both axes. Compressed-STFT
+data space and/or the MSS-log auxiliary both push supervision toward perceptual weighting; this is the
+likeliest cheap win for "dull hats" symptoms independent of FD work.</li>
+</ul>
+
+<h2 id="plateau"><span class="n">SECTION 6</span>The 100k plateau in this light</h2>
+
+<p>The capacity sweep separated the plateau into: fitting (teacher-forced) — unsaturated, scales with
+capacity; and sampled quality — capacity-independent wall (energy collapse, identity ≈ 0.6 CLAP-own),
+i.e. a sampling-dynamics problem. The earlier conclusion was "next levers: CFG sweep, maybe reflow." The
+FD endgame reframes this: <strong>1-NFE post-training operates at the deployment point and sidesteps the
+multi-step trajectory entirely</strong> — compounding ODE error and guidance scheduling stop being the
+binding constraint; distribution sharpening at t≈0 (exactly what FD-loss does, exactly what collapses the
+conditional-mean blur) becomes it. The paper's JiT-L result (1-step FID 291→0.77) is direct evidence that a
+weak 1-step base plus a correct distributional critic is sufficient.</p>
+<p>So: deprioritise multi-step sampler surgery. Spend the base-model budget on what transfers to the 1-NFE
+endgame — width (d768), log-domain auxiliaries, possibly compressed STFT space — and spend the recipe budget
+on FD-v2. The 25-step path remains a useful diagnostic and a fallback product, nothing more.</p>
+
+<h2 id="ladder"><span class="n">SECTION 7</span>Experiment ladder</h2>
+
+<p>Ordered for information-per-GPU-hour; each rung has an abort/branch signal. (Long runs in tmux as usual;
+nothing below assumes more than the existing 24&nbsp;GB cards.)</p>
+
+<table>
+<thead><tr><th></th><th>Experiment</th><th>Tests</th><th>Signal to advance / branch</th></tr></thead>
+<tbody>
+<tr><td class="mono">E0</td><td>No-train measurement pass: frame-rate line ratio, per-band energy, KAD (held-out PANN/VGGish), MATPAC retrieval on existing base + FD checkpoints, at matched guidance</td><td>builds the dashboard; quantifies the §3 symptoms</td><td>—</td></tr>
+<tr><td class="mono">E1</td><td>Statistics-only rerun: fixed reference moments (done) + warm-started fake moments + grad-accum ≥8, critics unchanged</td><td>how much was just bad statistics?</td><td>buzz persists → §2.1 confirmed, go E2; identity stabilises → anchors may be optional</td></tr>
+<tr><td class="mono">E2</td><td>Critic swap: CLAP + EnCodec(frame-level) + MERT; PANN/AudioMAE to eval</td><td>does a phase-sensitive, full-band ensemble kill the buzz and the HF garbage?</td><td>line-ratio → real-data levels; KAD improves on held-out spaces</td></tr>
+<tr><td class="mono">E3</td><td>+ anchors: RF keep-alive (or MSS-log) + cond-cycle, small λ</td><td>identity drift; remaining consistency artifacts</td><td>MATPAC retrieval ≥ base at matched guidance</td></tr>
+<tr><td class="mono">E4</td><td>KAD-as-loss variant and/or per-class bucketed moments</td><td>Gaussian-assumption slack on the multimodal manifold</td><td>only if E2/E3 plateau with distributional symptoms (mode imbalance, over-smoothed cloud)</td></tr>
+<tr><td class="mono">E5</td><td>Base retrain with the §5 levers (d768, MSS-log aux, optionally hop 256 or compressed STFT), then FD-v2 on top</td><td>does a better x-prediction backbone raise the FD ceiling?</td><td>gate on E2/E3 success — the recipe must work before the base is worth re-spending 200k steps on</td></tr>
+</tbody>
+</table>
+
+<h2 id="risks"><span class="n">SECTION 8</span>Risks, fallbacks, open questions</h2>
+
+<ul>
+<li><strong>Scale is the biggest unmatched factor.</strong> 122k clips and effective-B in the hundreds vs the
+paper's 1.28M and 1024. Distribution losses are statistics-hungry; frame-level FD partially compensates by
+multiplying the sample count, but if FD-v2 stalls, suspect the regime before the concept.</li>
+<li><strong>Audio has no DINOv2.</strong> EnCodec latents are compression-oriented (low-level), MERT is
+mid-level music structure, CLAP is coarse semantics — individually each is weaker than the image critics.
+The bet is that the <em>union</em> spans enough. If it doesn't, the proven audio alternative is paradigm-C
+post-training: Flow2GAN-style MPD/MRD adversarial fine-tune — per-sample discriminators are the
+artifact-killers vocoders rely on, and an MPD period set including the hop (512) would see the buzz
+directly. That is the wiki's recommended track anyway; FD-v2 and it are not mutually exclusive
+(FD for distribution, a light discriminator for texture).</li>
+<li><strong>Anchors vs sharpening tension.</strong> Every paired anchor reintroduces a regression-to-mean
+force. If outputs re-blur, the anchor weight is too high — the diagnostic is genRMS and the
+teacher-forced/sampled gap, not the FD value.</li>
+<li><strong>Goodhart, permanently.</strong> Each critic promoted into training deletes a metric. The held-out
+set (PANN, AudioMAE, VGGish, MATPAC-retrieval) must stay held out, and the final arbiter for "is it better"
+remains ears at matched guidance.</li>
+<li><strong>Open:</strong> does frame-level FD need a minimum frame count per clip to be stable for 100&nbsp;ms
+hits (≈15 EnCodec frames)? Does the cond-cycle anchor alone fix identity without any waveform anchor? Is
+compressed-STFT flow space worth the retrain on its own, independent of FD?</li>
+</ul>
+
+<div class="key">
+<span class="t">Bottom line</span>
+<p style="margin:0">FD-loss is the right idea applied through the wrong instruments at the wrong operating
+point. The 93.75&nbsp;Hz buzz, the identity drift, and the overall degradation are all predictable
+consequences of three magnitude-mel critics + B=24 + (formerly) 1,000-sample reference moments. The concept
+deserves a second run on audio-native terms: phase-sensitive critics with frame-level statistics, weak
+per-sample rails, paper-faithful estimation — measured only in spaces the loss never touched.</p>
+</div>
+
+<div class="foot">
+<p><strong>Sources.</strong>
+<a href="https://arxiv.org/abs/2604.28190">Representation Fréchet Loss for Visual Generation (arXiv 2604.28190)</a> ·
+<a href="https://arxiv.org/abs/2502.15602">KAD: No More FAD! (arXiv 2502.15602)</a> ·
+Gui et&nbsp;al., <em>Adapting Fréchet Audio Distance for Generative Music Evaluation</em> (ICASSP 2024, FAD<sub>∞</sub>) ·
+<a href="https://arxiv.org/abs/2211.06687">LAION-CLAP (arXiv 2211.06687)</a> ·
+<a href="https://arxiv.org/abs/2207.06405">AudioMAE (arXiv 2207.06405)</a> ·
+<a href="https://arxiv.org/abs/1912.10211">PANNs (arXiv 1912.10211)</a> ·
+<a href="https://arxiv.org/abs/2210.13438">EnCodec (arXiv 2210.13438)</a> ·
+<a href="https://arxiv.org/abs/2306.00107">MERT (arXiv 2306.00107)</a> ·
+<a href="https://arxiv.org/abs/2306.00814">Vocos (arXiv 2306.00814)</a> ·
+<a href="https://arxiv.org/abs/2010.05646">HiFi-GAN / MPD (arXiv 2010.05646)</a> ·
+<a href="https://arxiv.org/abs/2403.05010">RFWave (arXiv 2403.05010)</a> ·
+Griffin &amp; Lim 1984 / Le&nbsp;Roux et&nbsp;al. (spectrogram consistency).</p>
+<p>Code grounding: <code>src/losses/dist.py</code>, <code>src/trainer.py</code> (<code>FDTrainer</code>),
+<code>src/flow/fm.py</code>, <code>src/backbone/{transformer,io}.py</code>, <code>src/emb/*</code>,
+<code>configs/experiment/fd_finetune.yaml</code>, <code>runs/fm-oneshots-mars-stft-b64-200k/config.yaml</code>,
+<code>experiments/stft_capacity/*</code>. Related wiki: <a href="../concepts/post-training.md">post-training</a>,
+<a href="../concepts/evaluation.md">evaluation</a>, <a href="../concepts/inference.md">inference</a>.</p>
+</div>
+
+</body>
+</html>

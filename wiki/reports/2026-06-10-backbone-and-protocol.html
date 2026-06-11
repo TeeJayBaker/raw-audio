@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backbone &amp; protocol: why the STFT-frame transformer is the right shape</title>
+<style>
+  :root {
+    --paper:#f7f9f8; --ink:#1d2421; --mut:#65706b; --line:#dde4e0;
+    --accent:#1f6f6b;          /* deep teal */
+    --accent-soft:#e2efed;
+    --warm:#9a4f26; --warm-soft:#f4e9e1;
+    --code-bg:#eaf0ee;
+  }
+  * { box-sizing:border-box; }
+  html { background:var(--paper); }
+  body {
+    font:17px/1.65 Charter, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    color:var(--ink); max-width:780px; margin:0 auto; padding:56px 24px 80px;
+  }
+  .kicker {
+    font:600 .72rem/1 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    letter-spacing:.18em; text-transform:uppercase; color:var(--accent); margin-bottom:14px;
+  }
+  h1 { font-size:2.0rem; line-height:1.18; margin:0 0 .35em; font-weight:700; letter-spacing:-.01em; }
+  .sub { color:var(--mut); font-size:.95rem; margin:0 0 2.2em; }
+  h2 {
+    font-size:1.28rem; margin:2.6em 0 .6em; padding-top:1.1em; border-top:1px solid var(--line);
+    font-weight:700;
+  }
+  h2 .n {
+    font:700 .78rem/1 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    color:var(--accent); letter-spacing:.14em; display:block; margin-bottom:.55em;
+  }
+  h3 { font-size:1.02rem; margin:1.7em 0 .4em; font-weight:700; }
+  p { margin:.65em 0; }
+  ul, ol { margin:.65em 0; padding-left:1.4em; }
+  li { margin:.3em 0; }
+  code {
+    font:.84em/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background:var(--code-bg); padding:1px 5px; border-radius:3px;
+  }
+  table {
+    border-collapse:collapse; width:100%; margin:1em 0 1.3em;
+    font:.84rem/1.5 -apple-system, "Segoe UI", Helvetica, sans-serif;
+  }
+  th, td { padding:7px 9px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+  thead th {
+    border-bottom:2px solid #c2cdc8; font-size:.72rem; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--mut);
+  }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .key {
+    background:var(--accent-soft); border-left:3px solid var(--accent);
+    padding:.85em 1.1em; margin:1.4em 0; border-radius:0 4px 4px 0;
+  }
+  .key .t, .aside .t {
+    font:700 .7rem/1 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    letter-spacing:.14em; text-transform:uppercase; display:block; margin-bottom:.5em;
+  }
+  .key .t { color:var(--accent); }
+  .aside {
+    background:var(--warm-soft); border-left:3px solid var(--warm);
+    padding:.85em 1.1em; margin:1.4em 0; border-radius:0 4px 4px 0; font-size:.94rem;
+  }
+  .aside .t { color:var(--warm); }
+  figure { margin:1.6em 0; }
+  figcaption {
+    color:var(--mut); font:.82rem/1.5 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    margin-top:.55em;
+  }
+  a { color:var(--accent); }
+  .foot {
+    color:var(--mut); font:.82rem/1.7 -apple-system, "Segoe UI", Helvetica, sans-serif;
+    margin-top:3em; border-top:1px solid var(--line); padding-top:1.2em;
+  }
+</style>
+</head>
+<body>
+
+<div class="kicker">raw-audio · architecture · report</div>
+<h1>Backbone &amp; protocol: why the STFT-frame transformer is the right shape, and where the recipe still leaks</h1>
+<p class="sub">2026-06-10 · the three candidates (WaveNeXt/Vocos ConvNeXt · raw-patch transformer ·
+STFT-frame transformer) compared at the measured iso-latency point (≈30&nbsp;ms per generated second,
+M1 CPU, batch 1) · plus an audit of the noise-in-waveform→STFT denoising protocol and the RF/MF question.
+Companion to the <a href="2026-06-10-fd-loss-audio-adaptation.html">FD-loss adaptation report</a>.</p>
+
+<div class="key">
+<span class="t">TL;DR</span>
+<p style="margin-top:0">The STFT-frame transformer is the right choice, and not by accident. At fixed
+latency, token rate buys parameters: hop-rate tokens give you a ~54&nbsp;M model where 64-sample patches
+give you ~7&nbsp;M — and your own patch-512 run is the controlled experiment proving the win comes from the
+<em>basis</em>, not the token rate (identical geometry and FLOPs, retrieval 2/8 vs 7–8/8). The STFT basis is
+the correct inductive bias for a denoiser for three deep reasons: the shift theorem turns timing into
+smooth phase rotations, the fixed iSTFT oscillator bank absorbs the part of the task networks are worst at,
+and 4× overlap is free test-time ensembling. The vocoder-shape ConvNeXt is not wrong so much as
+mis-tasked: it excels when dense aligned conditioning (mel) pins the structure; with one global embedding
+the generation burden is global coordination, which its ±27-frame receptive field cannot do for a
+188-frame clip and which attention does in one hop — at ≤400 tokens attention is essentially free, so the
+ConvNeXt's only edge (kernel simplicity) doesn't pay here. The noising protocol itself is sound — noising
+the waveform before the STFT is actually the <em>better</em> variant, keeping every model input on the
+consistent-spectrogram manifold. The genuine leaks are loss-weighting ones: linear-power (Parseval)
+weighting starves quiet high-frequency content, and the logit-normal(0,1) t-distribution under-trains the
+t≈0 region that is the <em>only</em> operating point of the 1-NFE endgame. Evolve within this family
+(width → frequency-banded tokens → hop 256 → compressed coefficients; MeanFlow as the protocol successor
+if the RF base's conditional-mean blur caps FD post-training) rather than switching families.</p>
+</div>
+
+<h2 id="iso"><span class="n">SECTION 1</span>Iso-latency accounting: token rate buys parameters</h2>
+
+<p>For a transformer at these sequence lengths, FLOPs per generated second ≈ 2&nbsp;·&nbsp;params&nbsp;·&nbsp;tokens/s
+(attention's quadratic term is &lt;1% below ~400 tokens). Your measured anchor — d512/L12 (54.6&nbsp;M) at
+~94 tokens/s ≈ 10&nbsp;GFLOP per generated second ≈ 30&nbsp;ms on M1 — fixes the budget. At that budget the
+three candidates buy very different models:</p>
+
+<table>
+<thead><tr><th>Backbone</th><th class="num">Tokens/s @48k</th><th class="num">Params @ iso-RTF</th><th>Per-token content</th><th>Your evidence</th></tr></thead>
+<tbody>
+<tr><td><strong>STFT-frame transformer</strong> (hop 512)</td><td class="num">94</td><td class="num">~55&nbsp;M</td><td>2050 reals, windowed DFT, 4× overlap</td><td>cond retrieval 7–8/8 (probes); only backbone producing plausible audio at 200k</td></tr>
+<tr><td>Raw-patch transformer, patch 512</td><td class="num">94</td><td class="num">~55&nbsp;M</td><td>512 raw samples, no overlap</td><td>retrieval 2–3/8; WavFlow itself flags patch&nbsp;&gt;200 as a capacity bottleneck</td></tr>
+<tr><td>Raw-patch transformer, patch 64 (WavFlow shape)</td><td class="num">750</td><td class="num"><strong>~7&nbsp;M</strong></td><td>64 raw samples</td><td>untested at this scale; WavFlow quality came at much larger params</td></tr>
+<tr><td>ConvNeXt @ hop rate (Vocos/WaveNeXt shape)</td><td class="num">94 frames/s</td><td class="num">~55&nbsp;M</td><td>same STFT input, conv mixing</td><td>vocos-200k ran; lost to the transformer at matched data (see §3.2)</td></tr>
+</tbody>
+</table>
+
+<figure>
+<svg viewBox="0 0 680 240" width="100%" font-family="-apple-system,Segoe UI,Helvetica,sans-serif" role="img" aria-label="Token geometry of the three backbones over one second of audio">
+  <g font-size="11" fill="#65706b">
+    <line x1="150" y1="210" x2="640" y2="210" stroke="#c2cdc8"/>
+    <text x="150" y="226">0</text><text x="395" y="226" text-anchor="middle">0.5 s</text><text x="640" y="226" text-anchor="end">1 s</text>
+  </g>
+  <g font-size="11.5">
+    <text x="142" y="52" text-anchor="end" fill="#1d2421">patch-64</text>
+    <text x="142" y="66" text-anchor="end" fill="#65706b" font-size="10">750 tok/s → ~7 M @ iso-RTF</text>
+    <g fill="#9a4f26" opacity=".8">
+      <!-- 49 thin ticks -->
+      <rect x="150" y="44" width="6" height="14"/><rect x="160" y="44" width="6" height="14"/><rect x="170" y="44" width="6" height="14"/><rect x="180" y="44" width="6" height="14"/><rect x="190" y="44" width="6" height="14"/><rect x="200" y="44" width="6" height="14"/><rect x="210" y="44" width="6" height="14"/><rect x="220" y="44" width="6" height="14"/><rect x="230" y="44" width="6" height="14"/><rect x="240" y="44" width="6" height="14"/><rect x="250" y="44" width="6" height="14"/><rect x="260" y="44" width="6" height="14"/><rect x="270" y="44" width="6" height="14"/><rect x="280" y="44" width="6" height="14"/><rect x="290" y="44" width="6" height="14"/><rect x="300" y="44" width="6" height="14"/><rect x="310" y="44" width="6" height="14"/><rect x="320" y="44" width="6" height="14"/><rect x="330" y="44" width="6" height="14"/><rect x="340" y="44" width="6" height="14"/><rect x="350" y="44" width="6" height="14"/><rect x="360" y="44" width="6" height="14"/><rect x="370" y="44" width="6" height="14"/><rect x="380" y="44" width="6" height="14"/><rect x="390" y="44" width="6" height="14"/><rect x="400" y="44" width="6" height="14"/><rect x="410" y="44" width="6" height="14"/><rect x="420" y="44" width="6" height="14"/><rect x="430" y="44" width="6" height="14"/><rect x="440" y="44" width="6" height="14"/><rect x="450" y="44" width="6" height="14"/><rect x="460" y="44" width="6" height="14"/><rect x="470" y="44" width="6" height="14"/><rect x="480" y="44" width="6" height="14"/><rect x="490" y="44" width="6" height="14"/><rect x="500" y="44" width="6" height="14"/><rect x="510" y="44" width="6" height="14"/><rect x="520" y="44" width="6" height="14"/><rect x="530" y="44" width="6" height="14"/><rect x="540" y="44" width="6" height="14"/><rect x="550" y="44" width="6" height="14"/><rect x="560" y="44" width="6" height="14"/><rect x="570" y="44" width="6" height="14"/><rect x="580" y="44" width="6" height="14"/><rect x="590" y="44" width="6" height="14"/><rect x="600" y="44" width="6" height="14"/><rect x="610" y="44" width="6" height="14"/><rect x="620" y="44" width="6" height="14"/><rect x="630" y="44" width="6" height="14"/>
+    </g>
+    <text x="142" y="112" text-anchor="end" fill="#1d2421">patch-512</text>
+    <text x="142" y="126" text-anchor="end" fill="#65706b" font-size="10">94 tok/s → ~55 M; cond fails</text>
+    <g fill="#9a4f26" opacity=".55">
+      <rect x="150" y="104" width="48" height="14"/><rect x="202" y="104" width="48" height="14"/><rect x="254" y="104" width="48" height="14"/><rect x="306" y="104" width="48" height="14"/><rect x="358" y="104" width="48" height="14"/><rect x="410" y="104" width="48" height="14"/><rect x="462" y="104" width="48" height="14"/><rect x="514" y="104" width="48" height="14"/><rect x="566" y="104" width="48" height="14"/><rect x="618" y="104" width="22" height="14"/>
+    </g>
+    <text x="142" y="172" text-anchor="end" fill="#1f6f6b" font-weight="700">STFT hop 512</text>
+    <text x="142" y="186" text-anchor="end" fill="#65706b" font-size="10">94 tok/s, 4× overlap → ~55 M ✓</text>
+    <g stroke="#1f6f6b" stroke-width="1.6" fill="none" opacity=".8">
+      <path d="M150,190 Q176,150 202,190"/><path d="M163,190 Q189,150 215,190"/><path d="M176,190 Q202,150 228,190"/><path d="M189,190 Q215,150 241,190"/><path d="M202,190 Q228,150 254,190"/><path d="M215,190 Q241,150 267,190"/><path d="M228,190 Q254,150 280,190"/><path d="M241,190 Q267,150 293,190"/><path d="M254,190 Q280,150 306,190"/><path d="M267,190 Q293,150 319,190"/><path d="M280,190 Q306,150 332,190"/><path d="M293,190 Q319,150 345,190"/><path d="M306,190 Q332,150 358,190"/><path d="M319,190 Q345,150 371,190"/><path d="M332,190 Q358,150 384,190"/><path d="M345,190 Q371,150 397,190"/><path d="M358,190 Q384,150 410,190"/><path d="M371,190 Q397,150 423,190"/><path d="M384,190 Q410,150 436,190"/><path d="M397,190 Q423,150 449,190"/><path d="M410,190 Q436,150 462,190"/><path d="M423,190 Q449,150 475,190"/><path d="M436,190 Q462,150 488,190"/><path d="M449,190 Q475,150 501,190"/><path d="M462,190 Q488,150 514,190"/><path d="M475,190 Q501,150 527,190"/><path d="M488,190 Q514,150 540,190"/><path d="M501,190 Q527,150 553,190"/><path d="M514,190 Q540,150 566,190"/><path d="M527,190 Q553,150 579,190"/><path d="M540,190 Q566,150 592,190"/><path d="M553,190 Q579,150 605,190"/><path d="M566,190 Q592,150 618,190"/><path d="M579,190 Q605,150 631,190"/><path d="M592,190 Q618,150 644,190"/>
+    </g>
+  </g>
+</svg>
+<figcaption><strong>Fig. 1 — One second, three tokenisations.</strong> Same audio, same latency budget.
+Patch-64 spends the budget on token count; patch-512 and the STFT spend it on parameters. The middle and
+bottom rows have <em>identical</em> token geometry and FLOPs — only the per-token basis differs — and
+conditioning retrieval went 2–3/8 vs 7–8/8. The basis is causally load-bearing.</figcaption>
+</figure>
+
+<p>That patch-512 vs hop-512 pair deserves emphasis: it is a clean controlled comparison, everything held
+fixed except whether a token is 512 raw samples or a windowed, 4×-overlapped DFT view of 2048 samples.
+The transformer behind it is the same code path. The DFT view won decisively. §2 explains why that was
+predictable.</p>
+
+<h2 id="basis"><span class="n">SECTION 2</span>Why the STFT basis is the right inductive bias for a denoiser</h2>
+
+<h3>2.1 The shift theorem linearises timing</h3>
+<p>A denoiser conditioned on a global embedding must commit to <em>when</em> things happen while marginalising
+over micro-alignment under noise. In the STFT basis, delaying content by τ multiplies bin k by
+e<sup>−jω<sub>k</sub>τ</sup> — a smooth, low-dimensional, learnable transformation of the coefficients. In a
+raw-patch basis, a delay of even a few samples decorrelates every high-frequency coordinate of the patch —
+nearly a permutation. The raw-patch model must spend capacity building shift-equivariant machinery that the
+STFT provides analytically. This is the most economical explanation for the 2/8-vs-7/8 retrieval split at
+identical FLOPs.</p>
+
+<h3>2.2 The fixed oscillator bank absorbs what networks do worst</h3>
+<p>Neural networks have a documented low-frequency spectral bias; synthesising a clean 12&nbsp;kHz carrier
+with an MLP/conv output layer is exactly the failure mode of learned-upsampler vocoders (buzz, aliasing —
+the reason BigVGAN needed anti-aliased nonlinearities and Vocos/WaveNeXt simply route output through an
+iSTFT). In the STFT-frame backbone the network only predicts coefficients that vary at the <em>frame</em>
+rate (93.75&nbsp;Hz); the 24&nbsp;kHz-bandwidth oscillation is manufactured by the fixed iSTFT basis. The
+network's function class is matched to envelopes, not carriers.</p>
+
+<h3>2.3 Overlap is free test-time ensembling (with a known tax)</h3>
+<p>At 75% overlap every output sample is the (least-squares) average of 4 frame predictions. Incoherent
+per-frame error components attenuate ~6&nbsp;dB for free. The tax is the consistency failure mode analysed
+in the <a href="2026-06-10-fd-loss-audio-adaptation.html">FD report</a>: systematic disagreement between
+overlapping frames becomes hop-periodic modulation (93.75&nbsp;Hz). The tax is manageable (waveform-domain
+anchors, consistency penalty, hop 256); the ensembling is structural.</p>
+
+<h3>2.4 Locally, drums are sparse in this basis</h3>
+<p>Within a 2048-sample window a one-shot is a handful of partials plus shaped noise — a compressible,
+quasi-stationary spectrum. MSE regression onto sparse structured targets is a far easier conditional-mean
+problem than regression onto dense oscillatory raw samples. The same property is why the conditioner
+(MATPAC) and every audio SSL model also start from a time-frequency front-end.</p>
+
+<p class="small"><strong>Known costs of the basis</strong> (all previously catalogued, none disqualifying):
+no weight sharing across frequency and a 2050→512 per-frame squeeze (fix: width, then frequency-banded
+tokens); linear-power loss weighting (§4.2); OLA consistency (§2.3).</p>
+
+<h2 id="others"><span class="n">SECTION 3</span>The other two candidates, honestly</h2>
+
+<h3>3.1 Raw-patch transformer (WavFlow shape): wrong side of the iso-latency trade, worst-case for drums</h3>
+<p>WavFlow's result — high-quality raw-audio FM with 64-sample frames — is real but lives at a model scale
+the latency budget excludes: at 750 tokens/s the 30&nbsp;ms budget buys ~7&nbsp;M parameters, an order of
+magnitude below your current backbone, and WavFlow's own guidance (frame size ≤200, quality from scale)
+points the same direction. Two structural problems compound at small scale:</p>
+<ul>
+<li><strong>Low-frequency resolution.</strong> A 64-tap learned filterbank (the patch embedding) cannot
+resolve below roughly 750&nbsp;Hz within a token. A 50&nbsp;Hz kick fundamental spans 960 samples — 15
+consecutive tokens per <em>cycle</em> — so representing the single most important component of a kick drum
+requires coherent phase tracking across 15 tokens, paid out of attention/width budget. Drums are the
+worst-case content for this tokenisation; the STFT's 2048-sample window sees 2+ full cycles per token.</li>
+<li><strong>Alignment burden</strong>, as in §2.1, but at 8× the token count.</li>
+</ul>
+<p>Verdict: not viable at this latency for this content. Would reconsider only if the latency budget
+relaxed ~10× or the content moved to broadband/HF-dominated material.</p>
+
+<h3>3.2 Vocoder-shape ConvNeXt (Vocos/WaveNeXt): mis-tasked, not broken — the conditioning-density argument</h3>
+<p>Your suspicion ("doesn't work as a conditional denoiser with simpler class/embedding conditioning?") is,
+I think, correct, and the mechanism is worth writing down because it predicts <em>when</em> the vocoder
+shape will and won't work:</p>
+<div class="key">
+<span class="t">Conditioning density determines the required mixing range</span>
+<p style="margin:0">A mel-conditioned vocoder receives ~100 aligned coefficients <em>per frame</em>: every
+local decision (which partials, what envelope, where the onset is) is already made by the conditioning;
+the network performs local inversion, and a local conv receptive field suffices. A class/embedding-conditioned
+denoiser receives one 384-d vector <em>per clip</em>: the network itself must decide global structure —
+onset placement, decay law, spectral evolution — and keep those decisions coherent across the whole clip.
+That requires content-adaptive global communication. Attention does it in one hop at any position;
+a conv trunk must propagate it through stacked local kernels.</p>
+</div>
+<p>Concretely: the vocos-200k run's trunk (depth 8, k=7, hop 512) has a receptive field of
+7&nbsp;+&nbsp;8·6 = 55 frames ≈ 0.59&nbsp;s — about ±0.29&nbsp;s around any output frame. A 2&nbsp;s
+one-shot is 188 frames: the onset and the tail literally cannot see each other. AdaLN injects the
+<em>same</em> cond everywhere, which sets the global "what" but cannot coordinate the global "where/when".
+This is consistent with your own evidence: in the 8-clip overfit probe the ConvNeXt+iSTFT(realimag)+sep_norm
+recipe conditioned perfectly (8/8 retrieval — locally it's fine, and the conditioning-washout pathology was
+real but fixed), yet at 122k-clip scale it lost to the transformer. Flow2GAN — the reason the shape looked
+so promising — is mel-conditioned end to end; the wiki's open question ("does STFT-ConvNeXt survive
+unconditional generation?") flags exactly this gap in the literature.</p>
+<p>And the supposed CPU advantage mostly evaporates in this regime: at 94–188 tokens, attention is &lt;1% of
+FLOPs, so transformer-vs-ConvNeXt is a kernel-flavour choice, not a budget one. The ConvNeXt shape stays
+interesting for two futures only: streaming/chunked inference (where attention windows get awkward), and as
+a distillation <em>target</em> once a transformer teacher is good.</p>
+
+<h2 id="protocol"><span class="n">SECTION 4</span>Protocol audit: noise → STFT → denoise → ISTFT</h2>
+
+<h3>4.1 The construction itself is sound — and the better of the two variants</h3>
+<p>Because the STFT is linear, noising the waveform and then transforming is exactly RF in waveform space
+viewed through an invertible feature map: STFT(x<sub>t</sub>) = (1−t)·STFT(x<sub>0</sub>) + t·STFT(x<sub>1</sub>).
+Two non-obvious good properties follow. First, <strong>every input the model ever sees — training, any t,
+and pure noise at sampling — is the STFT of an actual waveform</strong>, i.e. lives on the consistent-spectrogram
+submanifold. The alternative (defining the flow directly on STFT coefficients with iid noise, RFWave-style)
+walks the model through inconsistent ambient space during sampling. Second, the loss-after-ISTFT means
+frame predictions are graded post-projection, so the model is never penalised for gauge (inconsistent
+frames that project to the right waveform). No flaw here; keep it.</p>
+
+<h3>4.2 The real leak №1: linear-power loss weighting</h3>
+<p>Waveform MSE = (Parseval) linear-spectral MSE. With peak-normed drums, the kick fundamental sits near
+0&nbsp;dB and the hat/cymbal detail at −30…−50&nbsp;dB: a 10³–10⁵ weighting against the content whose
+crispness you can hear. Equivalently, per-bin SNR under a white source crosses 1 at
+t&nbsp;=&nbsp;1/(1&nbsp;+&nbsp;a) for a bin of amplitude a: a loud bin (a≈1) crosses at t=0.5, a −20&nbsp;dB
+bin at t≈0.91, a −40&nbsp;dB bin at t≈0.99 — quiet bins are effectively pure noise for almost the entire
+trajectory, and the logit-normal(0,1) t-distribution concentrates training exactly where they're invisible.
+Mitigations in ascending invasiveness: <strong>(a)</strong> MSS log-magnitude auxiliary
+(<code>mr_stft_weight&gt;0, log_weight&gt;0</code> — implemented, currently off); <strong>(b)</strong> per-bin
+inverse-energy weighting of the spectral loss (the wiki's "spectral-energy-inverse weighting");
+<strong>(c)</strong> move the flow's data space to compressed coefficients |X|<sup>α</sup>e<sup>jφ</sup>,
+α≈0.3–0.5 (equalises dynamic range everywhere — model, loss, and noise addition — at zero inference cost;
+requires retraining).</p>
+
+<figure>
+<svg viewBox="0 0 680 220" width="100%" font-family="-apple-system,Segoe UI,Helvetica,sans-serif" role="img" aria-label="Per-bin SNR vs t for bins of different loudness">
+  <!-- x: t in [0,1] -> 90..640 ; y: SNR dB +30..-30 -> 30..170 (0dB at 100) -->
+  <g font-size="11" fill="#65706b">
+    <line x1="90" y1="170" x2="640" y2="170" stroke="#c2cdc8"/>
+    <line x1="90" y1="30" x2="90" y2="170" stroke="#c2cdc8"/>
+    <text x="90" y="186" text-anchor="middle">0</text>
+    <text x="365" y="186" text-anchor="middle">t = 0.5</text>
+    <text x="640" y="186" text-anchor="end">1</text>
+    <text x="82" y="104" text-anchor="end">0 dB</text>
+    <text x="82" y="36" text-anchor="end">+30</text>
+    <text x="82" y="172" text-anchor="end">−30</text>
+    <text x="365" y="206" text-anchor="middle" font-size="10">noise ←—— t ——→ data &nbsp;·&nbsp; shaded: logit-normal(0,1) sampling density</text>
+  </g>
+  <line x1="90" y1="100" x2="640" y2="100" stroke="#9a4f26" stroke-dasharray="4 3"/>
+  <!-- logit-normal density shading along x (bell around t=0.5) -->
+  <path d="M90,170 C200,168 250,118 365,114 C480,118 530,168 640,170 Z" fill="#1f6f6b" opacity=".10"/>
+  <!-- SNR curves: y = 100 - (20log10(t/(1-t)) + A)*70/30 -->
+  <g fill="none" stroke-width="2">
+    <!-- A=0 dB: crosses 0 at t=.5 -->
+    <path d="M118,170 C220,150 280,128 365,100 C450,72 510,50 612,30" stroke="#1d2421"/>
+    <!-- A=-20: crosses at t≈.91 -->
+    <path d="M200,170 C330,158 430,138 590,100 C610,94 625,88 640,82" stroke="#65706b"/>
+    <!-- A=-40: crosses ≈.99 -->
+    <path d="M300,170 C430,166 540,152 632,104 C636,102 638,101 640,100" stroke="#9a4f26"/>
+  </g>
+  <g font-size="10.5">
+    <text x="560" y="26" fill="#1d2421">loud bin (0 dB)</text>
+    <text x="560" y="70" fill="#65706b">−20 dB bin</text>
+    <text x="538" y="130" fill="#9a4f26">−40 dB bin (hat sizzle)</text>
+  </g>
+</svg>
+<figcaption><strong>Fig. 2 — Per-bin SNR along the interpolant.</strong> Quiet bins stay below 0&nbsp;dB SNR
+until t≈0.91 / 0.99; the t-sampling density (shaded) barely visits that region. Under linear MSE the model
+is trained on hats and sizzle almost nowhere. This is a loss/schedule property, not an architecture one.</figcaption>
+</figure>
+
+<h3>4.3 The real leak №2: the t-distribution vs the 1-NFE endgame</h3>
+<p>At 1-NFE the model is evaluated at exactly one point: t≈0, x-prediction from pure noise. Logit-normal(0,1)
+training mass peaks at t=0.5 and thins toward both ends — the deployment point is in a tail. The v-space
+loss compounds this: it is the x-loss reweighted by 1/(1−t)², i.e. extra emphasis on the <em>data</em> side.
+That combination is literature-correct for multi-step samplers (and your probes confirmed t-uniform and
+x-space are no better <em>at 25 steps</em>), but nobody has checked it for the 1-NFE-via-FD path. Cheap,
+untested knob: shift <code>logit_mean</code> negative (toward the noise side) for the final stretch of
+pretraining, then FD post-train. Alternatively accept it — FD post-training is itself specialisation at
+t≈0 — but then the base's t≈0 quality is doing less work than assumed, which matters for §5.</p>
+
+<h3>4.4 Smaller items, for completeness</h3>
+<ul>
+<li><strong>Scale mismatch / rms_lift</strong>: data RMS ~0.1–0.3 against a unit-variance source shifts
+every SNR crossing late (global version of §4.2). The lift fixes fitting (probe: teacher-forced corr
+0.99–1.00) but hurt sampled identity, so it stays off pending the FD-v2 verdict — note that a logit-mean
+shift attacks the same imbalance from the schedule side without touching amplitudes.</li>
+<li><strong>x-prediction</strong>: correct for the 1-NFE endgame (JiT/pMF lineage); keep.</li>
+<li><strong>Gauge freedom</strong>: the model may emit inconsistent frames that ISTFT projects correctly —
+harmless ambiguity; the optional consistency penalty from the FD report removes it if it ever matters.</li>
+<li><strong>center=true edge frames</strong>: the first ~2 frames mix in zero-padding right where one-shot
+onsets live; the 8&nbsp;ms start-pad augmentation already randomises this. Negligible.</li>
+</ul>
+
+<h2 id="rfmf"><span class="n">SECTION 5</span>RF vs MF: what the protocol should become</h2>
+
+<p>The RF base's 1-step output is a conditional mean — blur and energy collapse at t≈0 are intrinsic, not
+bugs — and the current plan (RF pretrain → FD post-train) asks FD-loss to do <em>all</em> of the
+un-collapsing. That is what the FD paper demonstrates (JiT-L, 291.6→0.77), so it is a legitimate plan, and
+it is already running; judge it first.</p>
+<p>The principled successor if FD-v2 plateaus on base blur: a <strong>MeanFlow-family pretrain (pMF recipe)
+on the exact same STFT-frame backbone</strong>. MeanFlow learns the average velocity over finite intervals,
+so its 1-step output is trained to land on the data manifold rather than at its conditional mean — the
+t≈0 problem of §4.3 dissolves by construction, and FD-loss then polishes a sharp model instead of rescuing
+a blurry one. This is the wiki's canonical stack (iMF/pMF → FD polish), the codebase's method abstraction
+already anticipates it (<code>build_method</code>: "RF today, MF/others later"), and pMF is the cheapest
+published 1-NFE pixel recipe (33&nbsp;GFLOPs, no learned φ) — the most audio-portable starting point.
+Decision rule: if E2/E3 of the FD ladder produce clean, identity-stable audio that still sounds soft,
+the base is the ceiling — port pMF. If they produce sharp audio, RF+FD suffices and MF is an optimisation,
+not a rescue.</p>
+
+<h2 id="verdict"><span class="n">SECTION 6</span>Verdict and evolution path</h2>
+
+<div class="key">
+<span class="t">Verdict</span>
+<p style="margin:0">Keep the STFT-frame transformer. It won your empirical bake-off for identifiable
+theoretical reasons (basis, not luck), and its known weaknesses all have in-family fixes. Evolution order:
+<strong>(1)</strong> width d768 (probe-validated, ~2× FLOPs); <strong>(2)</strong> MSS-log auxiliary in
+pretraining (free at inference, attacks §4.2); <strong>(3)</strong> frequency-banded tokens (~2× FLOPs,
+removes the 2050→512 squeeze, adds cross-frequency sharing); <strong>(4)</strong> hop 256 and/or compressed
+coefficients if consistency artifacts or HF dullness persist; <strong>(5)</strong> pMF protocol port if the
+RF base's conditional-mean blur caps FD post-training. The ConvNeXt shape is shelved, not buried —
+revisit as a streaming variant or distillation target. The raw-patch transformer is excluded by arithmetic
+at this latency budget.</p>
+</div>
+
+<div class="foot">
+<p><strong>Anchors and evidence.</strong> Iso-RTF anchor: 54.6&nbsp;M × ~94 tok/s ≈ 10&nbsp;GFLOP per
+generated second ≈ 30&nbsp;ms, M1 CPU, batch 1 (measured; worth recording in
+<a href="../concepts/inference.md">inference.md</a> — it is the batch-1 laptop-CPU datapoint the wiki lists
+as missing). Probe evidence: <code>experiments/stft_capacity/probe.py</code> (capacity, sampled gap),
+<code>experiments/wavenext_cond/probe.py</code> + <code>docs/wavenext_conditioning_diagnosis.md</code>
+(patch-512 2–3/8 vs STFT 7–8/8; ConvNeXt sep_norm/iSTFT-head results); runs
+<code>fm-oneshots-mars-{stft-b64,vocos,waveform-b64,wf-p128}-200k</code>.</p>
+<p><strong>Reading.</strong>
+<a href="https://arxiv.org/abs/2604.28190">FD-loss (2604.28190)</a> ·
+WavFlow (2605.18749) ·
+<a href="https://arxiv.org/abs/2306.00814">Vocos (2306.00814)</a> ·
+WaveNeXt ·
+Flow2GAN (2512.23278) ·
+<a href="https://arxiv.org/abs/2403.05010">RFWave (2403.05010)</a> ·
+pMF (2601.22158) · MeanFlow · JiT ·
+<a href="https://arxiv.org/abs/2206.04658">spectral bias / vocoder aliasing context: BigVGAN (2206.04658)</a>.
+Related wiki: <a href="../concepts/architecture.md">architecture</a>,
+<a href="../concepts/methods.md">methods</a>, <a href="../concepts/inference.md">inference</a>,
+<a href="../concepts/post-training.md">post-training</a>.</p>
+</div>
+
+</body>
+</html>

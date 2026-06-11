@@ -11,9 +11,11 @@ join this module later, sharing :class:`MomentEstimator`.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from functools import partial
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from eval.audio_metrics import _symmetric_matrix_sqrt, frechet_from_moments
 
@@ -38,11 +40,42 @@ class MomentEstimator(nn.Module):
             self.register_buffer("m1", torch.zeros(dim))
             self.register_buffer("m2", torch.zeros(dim, dim))
             self.register_buffer("initialized", torch.zeros((), dtype=torch.bool))
+            self.register_buffer("_init_sum1", None, persistent=False)
+            self.register_buffer("_init_sum2", None, persistent=False)
+            self.register_buffer("_init_count", torch.zeros((), dtype=torch.long), persistent=False)
         else:
             self.register_buffer("queue", torch.zeros(0, dim))
 
     def update_and_moments(self, feats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self._ema(feats) if self.mode == "ema" else self._queue(feats)
+
+    @torch.no_grad()
+    def accumulate_initialization(self, feats: torch.Tensor) -> None:
+        """Accumulate a uniformly weighted warm-start population without EMA decay."""
+        if self.mode != "ema":
+            self.queue = torch.cat([self.queue.to(feats), feats.detach()], dim=0)[-self.queue_size :]
+            return
+        feats = feats.detach().double()
+        if self._init_sum1 is None:
+            self._init_sum1 = torch.zeros_like(self.m1, dtype=torch.float64)
+            self._init_sum2 = torch.zeros_like(self.m2, dtype=torch.float64)
+        self._init_sum1.add_(feats.sum(dim=0))
+        self._init_sum2.add_(feats.T @ feats)
+        self._init_count.add_(feats.shape[0])
+
+    @torch.no_grad()
+    def finalize_initialization(self) -> None:
+        if self.mode != "ema":
+            return
+        count = int(self._init_count)
+        if count == 0:
+            raise ValueError("cannot initialize EMA moments from an empty population")
+        self.m1.copy_((self._init_sum1 / count).to(self.m1))
+        self.m2.copy_((self._init_sum2 / count).to(self.m2))
+        self.initialized.fill_(True)
+        self._init_sum1 = None
+        self._init_sum2 = None
+        self._init_count.zero_()
 
     def _ema(self, feats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch_m1 = feats.mean(dim=0)
@@ -95,6 +128,8 @@ class FrechetLoss(nn.Module):
         weights: Iterable[float] | None = None,
         sample_rate: int = 48000,
         eps: float = 1e-6,
+        checkpoint_embedders: bool = True,
+        embedder_autocast: bool = True,
     ):
         super().__init__()
         embedders = list(embedders)
@@ -110,6 +145,8 @@ class FrechetLoss(nn.Module):
         self.sample_rate = int(sample_rate)
         self.c = float(c)
         self.eps = float(eps)
+        self.checkpoint_embedders = bool(checkpoint_embedders)
+        self.embedder_autocast = bool(embedder_autocast)
         self.estimators = nn.ModuleList(
             MomentEstimator(emb.embedding_dim, mode=mode, beta=beta, queue_size=queue_size)
             for emb in embedders
@@ -128,22 +165,81 @@ class FrechetLoss(nn.Module):
         self.embedders.eval()
         return self
 
+    def _embed(
+        self, emb: nn.Module, fake_audio: torch.Tensor, audio_lengths: torch.Tensor | None
+    ) -> torch.Tensor:
+        autocast = self.embedder_autocast and fake_audio.is_cuda
+        with torch.amp.autocast(
+            device_type=fake_audio.device.type, dtype=torch.bfloat16, enabled=autocast
+        ):
+            feats = emb.embed(fake_audio, sample_rate=self.sample_rate, audio_lengths=audio_lengths)
+        return feats.float()
+
+    @torch.no_grad()
+    def accumulate_initialization(
+        self, fake_audio: torch.Tensor, audio_lengths: torch.Tensor | None = None
+    ) -> None:
+        for emb, est in zip(self.embedders, self.estimators, strict=True):
+            est.accumulate_initialization(self._embed(emb, fake_audio, audio_lengths))
+
+    @torch.no_grad()
+    def finalize_initialization(self) -> None:
+        for est in self.estimators:
+            est.finalize_initialization()
+
+    def _embedder_term(
+        self,
+        i: int,
+        fake_audio: torch.Tensor,
+        audio_lengths: torch.Tensor | None,
+        use_checkpoint: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        emb, est = self.embedders[i], self.estimators[i]
+        if use_checkpoint:
+            # Recompute φ activations during backward instead of retaining them in forward.
+            feats = checkpoint(
+                partial(self._embed, emb), fake_audio, audio_lengths, use_reentrant=False
+            )
+        else:
+            feats = self._embed(emb, fake_audio, audio_lengths)
+        mu_g, cov_g = est.update_and_moments(feats)
+        mu_r = getattr(self, f"mu_real_{i}").to(mu_g)
+        cov_r = getattr(self, f"cov_real_{i}").to(cov_g)
+        cov_r_sqrt = getattr(self, f"cov_real_sqrt_{i}").to(cov_g)
+        fd = frechet_from_moments(mu_r, cov_r, mu_g, cov_g, self.eps, cov_real_sqrt=cov_r_sqrt)["fad"]
+        return self.weights[i] * fd / (fd.detach() + self.c), fd.detach()
+
     def forward(
         self, fake_audio: torch.Tensor, audio_lengths: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        use_checkpoint = (
+            self.checkpoint_embedders and torch.is_grad_enabled() and fake_audio.requires_grad
+        )
         total = fake_audio.new_zeros(())
         terms: dict[str, torch.Tensor] = {}
-        for i, (emb, est, name, weight) in enumerate(
-            zip(self.embedders, self.estimators, self.names, self.weights, strict=True)
-        ):
-            feats = emb.embed(fake_audio, sample_rate=self.sample_rate, audio_lengths=audio_lengths).float()
-            mu_g, cov_g = est.update_and_moments(feats)
-            mu_r = getattr(self, f"mu_real_{i}").to(mu_g)
-            cov_r = getattr(self, f"cov_real_{i}").to(cov_g)
-            cov_r_sqrt = getattr(self, f"cov_real_sqrt_{i}").to(cov_g)
-            fd = frechet_from_moments(mu_r, cov_r, mu_g, cov_g, self.eps, cov_real_sqrt=cov_r_sqrt)["fad"]
-            total = total + weight * fd / (fd.detach() + self.c)
-            terms[f"fd/{name}"] = fd.detach()
+        for i, name in enumerate(self.names):
+            term, fd = self._embedder_term(i, fake_audio, audio_lengths, use_checkpoint)
+            total = total + term
+            terms[f"fd/{name}"] = fd
+        return total, terms
+
+    def backward_terms(
+        self, fake_audio: torch.Tensor, audio_lengths: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Like ``forward`` but backpropagates each φ term immediately, so only one φ graph is
+        alive at a time. Autograd interleaves independent branches of a summed loss, so a single
+        backward holds every φ graph at once (checkpointed or not); backwarding per term caps the
+        peak at one φ. ``fake_audio`` must be a grad-requiring leaf — the caller chains
+        ``fake_audio.grad`` through the generator. Returns the detached total and terms."""
+        if not (fake_audio.is_leaf and fake_audio.requires_grad):
+            raise ValueError("backward_terms expects a grad-requiring leaf (detach the generator output)")
+        total = fake_audio.new_zeros(())
+        terms: dict[str, torch.Tensor] = {}
+        for i, name in enumerate(self.names):
+            term, fd = self._embedder_term(i, fake_audio, audio_lengths, use_checkpoint=False)
+            term.backward()
+            total = total + term.detach()
+            terms[f"fd/{name}"] = fd
         return total, terms
 
 

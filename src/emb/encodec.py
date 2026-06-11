@@ -3,23 +3,24 @@ from __future__ import annotations
 import torch
 import torchaudio
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 
 class EnCodecEmbedding(nn.Module):
-    """EnCodec (24 kHz mono) embedding wrapper.
+    """EnCodec (48 kHz stereo) embedding wrapper.
 
     Uses the continuous encoder latent *before* quantization (``model.encoder``), a pure conv
-    stack that is differentiable. ``model.encode`` is avoided as its quantization is not.
-    Mean-pools the 128-d latent over time.
+    stack that is differentiable. ``model.encode`` is avoided as its quantization is not. Each
+    latent frame is returned as one 128-d population sample for frame-level FD.
     """
 
-    sample_rate = 24000
+    sample_rate = 48000
     name = "encodec"
 
     def __init__(
         self,
         device: str = "cuda",
-        model_name: str = "facebook/encodec_24khz",
+        model_name: str = "facebook/encodec_48khz",
         input_sample_rate: int = 48000,
     ):
         super().__init__()
@@ -40,6 +41,16 @@ class EnCodecEmbedding(nn.Module):
             param.requires_grad = False
         self.eval()
 
+    def train(self, mode: bool = True):
+        # Stays frozen/eval, except the encoder LSTMs: cudnn refuses RNN backward for eval-mode
+        # modules, and EnCodec's LSTM is dropout-free so train mode is numerically identical.
+        del mode
+        super().train(False)
+        for module in self.model.modules():
+            if isinstance(module, nn.LSTM):
+                module.train(True)
+        return self
+
     def embed(
         self,
         audio: torch.Tensor,
@@ -52,12 +63,23 @@ class EnCodecEmbedding(nn.Module):
                 f"EnCodecEmbedding was initialized for {self.input_sample_rate} Hz input, but got {sample_rate} Hz."
             )
         audio = audio.to(self.device).float()
-        if audio.ndim == 3:
-            audio = audio.mean(dim=1)
+        if audio.ndim == 2:
+            audio = audio.unsqueeze(1)
+        if audio.ndim != 3 or audio.shape[1] not in (1, 2):
+            raise ValueError("EnCodec audio must have shape [B, T] or [B, 1|2, T].")
+        if audio.shape[1] == 1:
+            audio = audio.repeat(1, 2, 1)
         if self.resampler is not None:
             audio = self.resampler(audio)
-        latents = self.model.encoder(audio.unsqueeze(1))  # [B, 128, T']
-        return latents.mean(dim=-1)
+        # The encoder graph at 48 kHz is by far the largest critic allocation (early conv layers
+        # at sample rate); checkpoint per layer so only layer-boundary tensors are retained.
+        hidden = audio
+        if torch.is_grad_enabled() and audio.requires_grad:
+            for layer in self.model.encoder.layers:
+                hidden = checkpoint(layer, hidden, use_reentrant=False)
+        else:
+            hidden = self.model.encoder(hidden)
+        return hidden.transpose(1, 2).reshape(-1, hidden.shape[1])  # [B*T', 128]
 
     @torch.no_grad()
     def forward(

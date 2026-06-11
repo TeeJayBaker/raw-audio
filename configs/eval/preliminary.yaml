@@ -7,7 +7,8 @@ metrics:
     enabled: false
     backend: clap  # clap | vggish
     backend_cfg: {}
-    distance: none  # none | fad | mind | both
+    distance: none  # none | fad | kad | mind | both (FAD+MIND) | all
+    kad_bandwidth: null  # null uses the real-set median pairwise distance
     mind_projections: 256
     cosine: false
     cache_real: true
@@ -15,6 +16,9 @@ metrics:
       enabled: false
       k: 5  # k-NN radius for the real manifold; standard from Naeem et al. 2020
   fad:
+    enabled: false
+    status: available_via_embedding_validation
+  kad:
     enabled: false
     status: available_via_embedding_validation
   mind:

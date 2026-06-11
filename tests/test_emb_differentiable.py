@@ -7,6 +7,8 @@ optional backend and skip gracefully when the checkpoint cannot be downloaded (o
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 import torch
 
@@ -14,10 +16,12 @@ INPUT_SR = 48000
 DURATION_S = 3
 
 
-def _assert_differentiable(emb) -> None:
+def _assert_differentiable(emb, *, clip_level: bool = True) -> None:
     audio = torch.randn(2, 1, INPUT_SR * DURATION_S, requires_grad=True)
     feats = emb.embed(audio, sample_rate=INPUT_SR)
-    assert feats.shape == (2, emb.embedding_dim)
+    assert feats.ndim == 2 and feats.shape[1] == emb.embedding_dim
+    if clip_level:
+        assert feats.shape[0] == 2
     assert torch.isfinite(feats).all()
     feats.sum().backward()
     assert audio.grad is not None
@@ -43,7 +47,10 @@ def test_encodec_differentiable():
     pytest.importorskip("transformers")
     from emb.encodec import EnCodecEmbedding
 
-    _assert_differentiable(_build_or_skip(lambda: EnCodecEmbedding(device="cpu", input_sample_rate=INPUT_SR)))
+    _assert_differentiable(
+        _build_or_skip(lambda: EnCodecEmbedding(device="cpu", input_sample_rate=INPUT_SR)),
+        clip_level=False,
+    )
 
 
 def test_mert_differentiable():
@@ -61,7 +68,8 @@ def test_audiomae_differentiable():
 
 
 def test_clap_differentiable():
-    pytest.importorskip("laion_clap")
+    if importlib.util.find_spec("laion_clap") is None:
+        pytest.skip("laion_clap is not installed")
     from emb.clap import CLAPEmbedding
 
     _assert_differentiable(_build_or_skip(lambda: CLAPEmbedding(device="cpu", input_sample_rate=INPUT_SR)))

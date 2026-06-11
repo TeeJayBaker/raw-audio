@@ -9,12 +9,13 @@ from eval.audio_metrics import (
     density_coverage,
     embedding_cosine_score,
     frechet_audio_distance,
+    kernel_audio_distance,
     monge_audio_distance,
 )
 
 
 def embedding_metric_cfg(cfg) -> dict[str, Any]:
-    """Resolve the eval.metrics.embedding_validation block (with FAD/MIND/cosine fallbacks)."""
+    """Resolve embedding validation config, including legacy FAD/MIND/cosine fallbacks."""
     eval_cfg = cfg.get("eval", {})
     metrics_cfg = eval_cfg.get("metrics", {}) if eval_cfg is not None else {}
     embedding_cfg = dict(metrics_cfg.get("embedding_validation", {}) or {})
@@ -65,8 +66,10 @@ def _finalize_embedding_metrics(
 ) -> dict[str, float]:
     metrics: dict[str, float] = {}
     distance = str(embedding_cfg.get("distance", "none")).lower()
-    if distance not in {"none", "fad", "mind", "both"}:
-        raise ValueError("eval.metrics.embedding_validation.distance must be none, fad, mind, or both")
+    if distance not in {"none", "fad", "kad", "mind", "both", "all"}:
+        raise ValueError(
+            "eval.metrics.embedding_validation.distance must be none, fad, kad, mind, both, or all"
+        )
     if bool(embedding_cfg.get("cosine", False)):
         if real_cond and fake_cond:
             metrics["val_embedding_cosine"] = float(
@@ -74,13 +77,23 @@ def _finalize_embedding_metrics(
             )
         else:
             metrics["val_embedding_cosine_skipped"] = 1.0
-    if distance in {"fad", "both"}:
+    if distance in {"fad", "both", "all"}:
         if real_metric and fake_metric:
             fad = frechet_audio_distance(torch.cat(real_metric), torch.cat(fake_metric))
             metrics["val_fad"] = float(fad["fad"].detach().cpu())
         else:
             metrics["val_fad_skipped"] = 1.0
-    if distance in {"mind", "both"}:
+    if distance in {"kad", "all"}:
+        if real_metric and fake_metric:
+            kad = kernel_audio_distance(
+                torch.cat(real_metric),
+                torch.cat(fake_metric),
+                bandwidth=embedding_cfg.get("kad_bandwidth"),
+            )
+            metrics["val_kad"] = float(kad["kad"].detach().cpu())
+        else:
+            metrics["val_kad_skipped"] = 1.0
+    if distance in {"mind", "both", "all"}:
         if real_metric and fake_metric:
             mind = monge_audio_distance(
                 torch.cat(real_metric),
@@ -107,7 +120,7 @@ def _finalize_embedding_metrics(
 
 @torch.no_grad()
 def validate_metrics(trainer) -> dict[str, float]:
-    """Average validation loss terms over a few batches, plus optional FAD/MIND/cosine."""
+    """Average validation loss terms over a few batches, plus embedding metrics."""
     loader = trainer.val_loader
     if loader is None:
         return {}
@@ -116,7 +129,7 @@ def validate_metrics(trainer) -> dict[str, float]:
     enabled = bool(embedding_cfg.get("enabled", False))
     distance = str(embedding_cfg.get("distance", "none")).lower()
     wants_dc = bool((embedding_cfg.get("density_coverage", {}) or {}).get("enabled", False))
-    needs_backend = distance in {"fad", "mind", "both"} or wants_dc
+    needs_backend = distance in {"fad", "kad", "mind", "both", "all"} or wants_dc
     wants_cosine = bool(embedding_cfg.get("cosine", False))
     cache = trainer.real_embedding_cache if enabled and bool(embedding_cfg.get("cache_real", True)) else None
     max_batches = int(cfg.train.get("val_batches", 1))
@@ -137,15 +150,19 @@ def validate_metrics(trainer) -> dict[str, float]:
                 audio_lengths = batch["audio_lengths"].to(trainer.device)
                 sample_rate = int(batch["sample_rate"])
                 cond = trainer.condition(audio, sample_rate, audio_lengths)
-                loss, terms = trainer.training_step(audio, cond)
+                loss, terms, fake = trainer.validation_step(audio, cond)
                 sums["val_total"] = sums.get("val_total", 0.0) + float(loss.detach().cpu())
                 for name, value in terms.items():
                     sums[f"val_{name}"] = sums.get(f"val_{name}", 0.0) + float(value.detach().cpu())
                 if enabled and (needs_backend or wants_cosine):
-                    fake = trainer.sample(tuple(audio.shape), cond=cond).clamp(-1.0, 1.0)
+                    if fake is None:
+                        fake = trainer.sample(tuple(audio.shape), cond=cond)
+                    fake = fake.clamp(-1.0, 1.0)
                     if needs_backend:
                         if trainer.metric_backend is None:
-                            raise ValueError("FAD/MIND validation requires a metric embedding backend")
+                            raise ValueError(
+                                "FAD/KAD/MIND validation requires a metric embedding backend"
+                            )
                         real = _embed_with_cache(
                             trainer.metric_backend, batch, audio, sample_rate, audio_lengths, cache
                         )

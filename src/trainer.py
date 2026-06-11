@@ -247,6 +247,15 @@ class BaseTrainer:
     def validate(self) -> dict[str, float]:
         return validate_metrics(self)
 
+    def validation_step(
+        self, audio: torch.Tensor, cond: torch.Tensor | None
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor | None]:
+        loss, terms = self.training_step(audio, cond)
+        return loss, terms, None
+
+    def warm_start_step(self, audio: torch.Tensor, cond: torch.Tensor | None) -> bool:
+        return False
+
     # ---- training loop --------------------------------------------------------
     def run(self) -> None:
         self.model.train()
@@ -262,6 +271,8 @@ class BaseTrainer:
                     sample_rate = int(batch["sample_rate"])
                     cond = self._cfg_dropout(self.condition(audio, sample_rate, audio_lengths))
 
+                    if self.warm_start_step(audio, cond):
+                        continue
                     if micro == 0:
                         self.optimizer.zero_grad(set_to_none=True)
                     loss, terms = self.training_step(audio, cond)
@@ -413,7 +424,11 @@ class FDTrainer(RFTrainer):
         self._pretrained = torch.load(Path(init_from).expanduser(), map_location="cpu", weights_only=False)
         base_cfg = OmegaConf.create(self._pretrained["cfg"])
         # Inherit architecture/method/sampling/conditioner from the checkpoint; explicit FD-cfg wins.
-        inherited = {key: base_cfg[key] for key in ("backbone", "flow", "sampling", "conditioner") if key in base_cfg}
+        inherited = {
+            key: base_cfg[key]
+            for key in ("backbone", "flow", "sampling", "conditioner", "loss")
+            if key in base_cfg
+        }
         super().__init__(OmegaConf.merge(OmegaConf.create(inherited), cfg))
 
         if self.step == 0:  # fresh fine-tune (not resuming an FD run): start from the pretrained weights
@@ -428,16 +443,21 @@ class FDTrainer(RFTrainer):
             emb.to(self.device).eval()
             for emb in build_embeddings(fd_cfg.get("embedders", []), self.device)
         ]
+        beta = float(fd_cfg.get("beta", 0.999)) ** (1.0 / self.grad_accum)
         self.fd_loss = FrechetLoss(
             embedders,
             self._real_moments(embedders),
             mode=str(fd_cfg.get("mode", "ema")),
-            beta=float(fd_cfg.get("beta", 0.999)),
+            beta=beta,
             queue_size=int(fd_cfg.get("queue_size", 50000)),
             c=float(fd_cfg.get("c", 1e-3)),
             weights=fd_cfg.get("weights"),
             sample_rate=self.sample_rate,
+            checkpoint_embedders=bool(fd_cfg.get("checkpoint_embedders", True)),
+            embedder_autocast=bool(fd_cfg.get("embedder_autocast", True)),
         ).to(self.device)
+        self.fd_warm_start_samples = int(fd_cfg.get("warm_start_samples", 50000))
+        self.fd_warm_start_seen = 0
 
     def _real_moments(self, embedders) -> list[tuple[torch.Tensor, torch.Tensor]]:
         FD_MOMENTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -465,7 +485,7 @@ class FDTrainer(RFTrainer):
             moments.append((data["mu"], data["cov"]))
         return moments
 
-    def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
+    def _generated_batch(self, audio: torch.Tensor, cond: torch.Tensor | None) -> torch.Tensor:
         shape = tuple(audio.shape)
         gen_cond = cond if self.fd_conditional else None
         sampling = self.cfg.sampling
@@ -483,7 +503,38 @@ class FDTrainer(RFTrainer):
         peak = fake.abs().amax(dim=tuple(range(1, fake.ndim)), keepdim=True).clamp_min(1e-8)
         # Generated batch is uniform full length (no padding) → match the dataset's peak-norm, embed
         # without lengths. Real moments are precomputed, so the real audio isn't needed here.
-        return self.fd_loss(fake / peak)
+        return fake / peak
+
+    @torch.no_grad()
+    def warm_start_step(self, audio: torch.Tensor, cond: torch.Tensor | None) -> bool:
+        if self.fd_warm_start_seen >= self.fd_warm_start_samples:
+            return False
+        remaining = self.fd_warm_start_samples - self.fd_warm_start_seen
+        fake = self._generated_batch(audio, cond)[:remaining]
+        self.fd_loss.accumulate_initialization(fake)
+        self.fd_warm_start_seen += fake.shape[0]
+        if self.progress is not None:
+            self.progress.set_postfix(warm_start=f"{self.fd_warm_start_seen}/{self.fd_warm_start_samples}")
+        if self.fd_warm_start_seen == self.fd_warm_start_samples:
+            self.fd_loss.finalize_initialization()
+        return True
+
+    def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
+        fake = self._generated_batch(audio, cond)
+        leaf = fake.detach().requires_grad_(True)
+        total, terms = self.fd_loss.backward_terms(leaf)
+        # Chain rule through the generator in one pass: the surrogate's gradient is
+        # leaf.gradᵀ·∂fake/∂θ; its value is replaced by the detached FD total for logging.
+        surrogate = (fake * leaf.grad.detach()).sum()
+        return surrogate - surrogate.detach() + total, terms
+
+    def validation_step(
+        self, audio: torch.Tensor, cond: torch.Tensor | None
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor]:
+        fake = self._generated_batch(audio, cond)
+        fd_loss, fd_terms = self.fd_loss(fake)
+        v_loss, _ = RFTrainer.training_step(self, audio, cond)
+        return fd_loss, {**fd_terms, "v_loss": v_loss}, fake
 
     def validate(self) -> dict[str, float]:
         was_training = self.fd_loss.training

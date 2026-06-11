@@ -78,6 +78,7 @@ def test_fdtrainer_smoke_finetunes_from_checkpoint(tmp_path: Path, monkeypatch):
                 "train.amp=false",
                 f"train.init_from={checkpoint}",
                 "train.max_steps=2",
+                "train.grad_accum_steps=2",
                 "train.warmup_steps=0",
                 "train.ema_decay=0.9",
                 "train.val_fraction=0.5",
@@ -90,6 +91,9 @@ def test_fdtrainer_smoke_finetunes_from_checkpoint(tmp_path: Path, monkeypatch):
                 "train.dataloader.drop_last=false",
                 "train.dataloader.num_workers=0",
                 "train.dataloader.pin_memory=false",
+                "eval.metrics.embedding_validation.enabled=false",
+                "fd.warm_start_samples=4",
+                "fd.beta=0.81",
                 "fd.embedders=[{type:random,embedding_dim:8,n_fft:64,hop_length:16,input_sample_rate:8000}]",
             ],
         )
@@ -110,15 +114,27 @@ def test_fdtrainer_smoke_finetunes_from_checkpoint(tmp_path: Path, monkeypatch):
     )
     assert torch.allclose(cached["mu"], expected[0])
     assert torch.allclose(cached["cov"], expected[1])
+    assert math.isclose(trainer.fd_loss.estimators[0].beta, 0.9)
 
     mtime = cache_path.stat().st_mtime_ns
     trainer._real_moments(trainer.fd_loss.embedders)
     assert cache_path.stat().st_mtime_ns == mtime
+
+    optimizer_steps = []
+
+    def record_step(*args, **kwargs):
+        optimizer_steps.append(trainer.fd_warm_start_seen)
+
+    trainer.optimizer.register_step_pre_hook(record_step)
     trainer.run()
 
+    assert trainer.fd_warm_start_seen == 4
+    assert all(bool(est.initialized) for est in trainer.fd_loss.estimators)
+    assert optimizer_steps and all(seen >= 4 for seen in optimizer_steps)
     assert trainer.step == 2
     assert (fd_run / "checkpoints" / "step_00000002.pt").exists()
 
     metrics = trainer.validate()
     assert metrics and "val_total" in metrics
+    assert "val_v_loss" in metrics
     assert all(math.isfinite(value) for value in metrics.values())

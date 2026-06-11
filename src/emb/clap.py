@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -22,11 +26,14 @@ class CLAPEmbedding(nn.Module):
         input_sample_rate: int = 48000,
     ):
         super().__init__()
+        spec = importlib.util.find_spec("laion_clap")
+        if spec is None or spec.origin is None:
+            raise ImportError("CLAP metrics require optional dependency 'laion_clap'.")
         try:
-            import laion_clap
             from huggingface_hub import hf_hub_download
         except ImportError as exc:
             raise ImportError("CLAP metrics require optional dependency 'laion_clap'.") from exc
+        package_dir = Path(spec.origin).parent
         self.device = torch.device(device)
         self.encode_batch_size = int(encode_batch_size)
         self.input_sample_rate = int(input_sample_rate)
@@ -35,12 +42,42 @@ class CLAPEmbedding(nn.Module):
             if self.input_sample_rate == self.sample_rate
             else torchaudio.transforms.Resample(self.input_sample_rate, self.sample_rate).to(self.device)
         )
-        # Default to the music-trained HTSAT-base checkpoint; hf_hub_download caches under
-        # ~/.cache/huggingface and returns the local path, so this is a no-op on repeat runs.
         if checkpoint_path is None:
-            checkpoint_path = hf_hub_download("lukewys/laion_clap", "music_audioset_epoch_15_esc_90.14.pt")
-        self.model = laion_clap.CLAP_Module(enable_fusion=enable_fusion, amodel=amodel, device=str(device))
-        self.model.load_ckpt(ckpt=checkpoint_path, verbose=False)
+            repo_id = "lukewys/laion_clap"
+            filename = "music_audioset_epoch_15_esc_90.14.pt"
+            try:
+                checkpoint_path = hf_hub_download(repo_id, filename, local_files_only=True)
+            except FileNotFoundError:
+                checkpoint_path = hf_hub_download(repo_id, filename)
+
+        if str(package_dir) not in sys.path:
+            sys.path.insert(0, str(package_dir))
+        from clap_module import create_model
+
+        self.model, model_cfg = create_model(
+            amodel,
+            "transformer",
+            device=self.device,
+            enable_fusion=enable_fusion,
+        )
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state = checkpoint.get("state_dict", checkpoint)
+        audio_state = {
+            name.removeprefix("module."): value
+            for name, value in state.items()
+            if name.removeprefix("module.").startswith(("audio_branch.", "audio_projection."))
+        }
+        self.model.load_state_dict(audio_state, strict=False)
+        for name in (
+            "text_branch",
+            "text_transform",
+            "text_projection",
+            "token_embedding",
+            "positional_embedding",
+            "ln_final",
+        ):
+            delattr(self.model, name)
+        self.max_audio_samples = int(model_cfg["audio_cfg"]["clip_samples"])
         self.embedding_dim = 512
         self.eval()
 
@@ -61,13 +98,24 @@ class CLAPEmbedding(nn.Module):
             audio = audio.mean(dim=1)
         if self.resampler is not None:
             audio = self.resampler(audio)
-        # use_tensor=True skips waveform quantization, keeping the graph intact (laion moves the
-        # tensor to the model device internally), so embed stays differentiable for FD-loss.
         chunks = []
         for i in range(0, audio.shape[0], self.encode_batch_size):
             chunk = audio[i : i + self.encode_batch_size]
-            chunks.append(self.model.get_audio_embedding_from_data(x=chunk, use_tensor=True))
-        return F.normalize(torch.cat(chunks, dim=0), p=2, dim=-1)
+            audio_input = []
+            for waveform in chunk:
+                if waveform.numel() > self.max_audio_samples:
+                    overflow = waveform.numel() - self.max_audio_samples
+                    start = int(torch.randint(overflow + 1, ()).item())
+                    waveform = waveform[start : start + self.max_audio_samples]
+                elif waveform.numel() < self.max_audio_samples:
+                    repeats = self.max_audio_samples // max(waveform.numel(), 1)
+                    waveform = F.pad(
+                        waveform.repeat(repeats),
+                        (0, self.max_audio_samples - waveform.numel() * repeats),
+                    )
+                audio_input.append({"longer": torch.tensor([False]), "waveform": waveform})
+            chunks.append(self.model.get_audio_embedding(audio_input))
+        return torch.cat(chunks, dim=0)
 
     @torch.no_grad()
     def forward(

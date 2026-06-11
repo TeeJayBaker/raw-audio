@@ -138,6 +138,60 @@ def frechet_audio_distance(
     return result
 
 
+def kernel_audio_distance(
+    real_embeddings: torch.Tensor,
+    fake_embeddings: torch.Tensor,
+    embedding_backend: EmbeddingBackend | None = None,
+    bandwidth: float | None = None,
+    scale: float = 100.0,
+    eps: float = 1e-8,
+    **backend_kwargs: object,
+) -> dict[str, torch.Tensor]:
+    """KADtk-style unbiased MMD² with a Gaussian RBF kernel.
+
+    The default bandwidth is the median pairwise distance within the real/reference
+    embeddings. As an unbiased finite-sample estimator, KAD may be slightly negative.
+    """
+    real_embeddings = _as_embeddings(real_embeddings, embedding_backend, **backend_kwargs)
+    fake_embeddings = _as_embeddings(fake_embeddings, embedding_backend, **backend_kwargs)
+    _validate_pair(real_embeddings, fake_embeddings)
+    if real_embeddings.shape[0] < 2 or fake_embeddings.shape[0] < 2:
+        raise ValueError("KAD requires at least two real and two fake embeddings")
+
+    out_dtype = real_embeddings.dtype
+    dtype = torch.float64 if out_dtype == torch.float64 else torch.float32
+    real = real_embeddings.to(dtype)
+    fake = fake_embeddings.to(device=real.device, dtype=dtype)
+
+    if bandwidth is None:
+        bandwidth_tensor = torch.pdist(real).median()
+    else:
+        if bandwidth < 0:
+            raise ValueError("bandwidth must be non-negative")
+        bandwidth_tensor = real.new_tensor(bandwidth)
+
+    gamma = (2.0 * bandwidth_tensor.square() + eps).reciprocal()
+
+    def rbf(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        distances_squared = torch.cdist(x, y).square()
+        return torch.exp(-gamma * distances_squared)
+
+    kernel_real = rbf(real, real)
+    kernel_fake = rbf(fake, fake)
+    kernel_cross = rbf(real, fake)
+    n_real, n_fake = real.shape[0], fake.shape[0]
+    real_mean = (kernel_real.sum() - kernel_real.diagonal().sum()) / (n_real * (n_real - 1))
+    fake_mean = (kernel_fake.sum() - kernel_fake.diagonal().sum()) / (n_fake * (n_fake - 1))
+    kad = scale * (real_mean + fake_mean - 2.0 * kernel_cross.mean())
+
+    return {
+        "kad": kad.to(out_dtype),
+        "bandwidth": bandwidth_tensor.to(out_dtype),
+        "n_real": torch.tensor(n_real, device=real.device),
+        "n_fake": torch.tensor(n_fake, device=real.device),
+    }
+
+
 def monge_audio_distance(
     real_embeddings: torch.Tensor,
     fake_embeddings: torch.Tensor,

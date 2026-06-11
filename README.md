@@ -63,31 +63,31 @@ uv run ruff check .
 Validate a single flow-matching batch with a null conditioner:
 
 ```bash
-PYTHONPATH=src uv run python scripts/validate_fm_batch.py --use-null-conditioner
+uv run python scripts/validate_fm_batch.py --use-null-conditioner
 ```
 
 Run the CPU smoke experiment:
 
 ```bash
-PYTHONPATH=src uv run python train.py --config-name experiment/fm_wavenext_smoke
+uv run python train.py --config-name experiment/fm_wavenext_smoke
 ```
 
 Run the baseline experiment:
 
 ```bash
-PYTHONPATH=src uv run python train.py --config-name experiment/fm_baseline
+uv run python train.py --config-name experiment/fm_baseline
 ```
 
 Sample from a checkpoint:
 
 ```bash
-PYTHONPATH=src uv run python scripts/sample_fm.py runs/fm-wavenext-smoke/checkpoints/step_00000002.pt --out sample.wav
+uv run python scripts/sample_fm.py runs/fm-wavenext-smoke/checkpoints/step_00000002.pt --out sample.wav
 ```
 
 Benchmark backbone throughput:
 
 ```bash
-PYTHONPATH=src uv run python scripts/benchmark_backbone.py
+uv run python scripts/benchmark_backbone.py
 ```
 
 ## Configuration
@@ -104,13 +104,13 @@ Experiments are composed from `configs/`:
 The default entrypoint is:
 
 ```bash
-PYTHONPATH=src uv run python train.py --config-name experiment/fm_baseline
+uv run python train.py --config-name experiment/fm_baseline
 ```
 
 Hydra overrides can be appended as usual, for example:
 
 ```bash
-PYTHONPATH=src uv run python train.py --config-name experiment/fm_wavenext_smoke train.max_steps=10 sampling.steps=1
+uv run python train.py --config-name experiment/fm_wavenext_smoke train.max_steps=10 sampling.steps=1
 ```
 
 ## Weights & Biases
@@ -118,7 +118,7 @@ PYTHONPATH=src uv run python train.py --config-name experiment/fm_wavenext_smoke
 Training initializes wandb by default using shared defaults from `configs/train/default.yaml`. Configure the run with Hydra overrides:
 
 ```bash
-PYTHONPATH=src uv run python train.py \
+uv run python train.py \
   --config-name experiment/fm_baseline \
   train.wandb.entity=my-team \
   train.wandb.name=fm-baseline-001
@@ -127,19 +127,19 @@ PYTHONPATH=src uv run python train.py \
 Disable wandb for a local run:
 
 ```bash
-PYTHONPATH=src uv run python train.py --config-name experiment/fm_wavenext_smoke train.wandb.enabled=false
+uv run python train.py --config-name experiment/fm_wavenext_smoke train.wandb.enabled=false
 ```
 
 Use offline wandb logging:
 
 ```bash
-PYTHONPATH=src uv run python train.py --config-name experiment/fm_baseline train.wandb.mode=offline
+uv run python train.py --config-name experiment/fm_baseline train.wandb.mode=offline
 ```
 
 Wandb receives scalar train/validation metrics plus audio monitor pairs from a fixed validation set. Reference audio is logged once; generated audio is logged on every validation run with fixed per-example initial noise for reproducible comparisons.
 
 ## Notes
 
-The code is not packaged as an installable Python package. `pyproject.toml` configures `uv`, pytest, and ruff; modules are imported from `src/` with `PYTHONPATH=src`.
+The code is not packaged as an installable Python package. `pyproject.toml` configures `uv`, pytest, and ruff; executable scripts add `src/` to their Python import path.
 
 Generated assets, checkpoints, datasets, PDFs, reports, and local research notes are deliberately excluded from git so the repository stays focused on reusable experiment code.

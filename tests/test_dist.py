@@ -4,7 +4,7 @@ import torch
 
 from emb.random import RandomProjEmbedding
 from eval.audio_metrics import _covariance, frechet_audio_distance, frechet_from_moments
-from losses.dist import FrechetLoss, compute_real_moments
+from losses.dist import FrechetLoss, MomentEstimator, compute_real_moments
 
 SR = 8000
 
@@ -53,6 +53,43 @@ def test_fd_loss_backprops_to_generated_audio():
     assert "fd/random" in terms
     assert fake.grad is not None and torch.isfinite(fake.grad).all()
     assert fake.grad.abs().sum() > 0
+
+
+def test_backward_terms_matches_forward_backward():
+    torch.manual_seed(0)
+    embedders = [_embedder(dim=16, seed=1), _embedder(dim=8, seed=2)]
+    embedders[0].name, embedders[1].name = "phi_a", "phi_b"
+    real = torch.randn(8, 1, 256)
+    moments = [_moments(emb, real) for emb in embedders]
+    fake = torch.randn(8, 1, 256)
+
+    direct = FrechetLoss(embedders, moments, mode="ema", sample_rate=SR, checkpoint_embedders=False)
+    fake_direct = fake.clone().requires_grad_(True)
+    total_direct, _ = direct(fake_direct)
+    total_direct.backward()
+
+    staged = FrechetLoss(embedders, moments, mode="ema", sample_rate=SR)
+    fake_staged = fake.clone().requires_grad_(True)
+    total_staged, terms = staged.backward_terms(fake_staged)
+
+    assert torch.allclose(total_staged, total_direct.detach(), atol=1e-6)
+    assert torch.allclose(fake_staged.grad, fake_direct.grad, atol=1e-7)
+    assert set(terms) == {"fd/phi_a", "fd/phi_b"}
+
+
+def test_ema_warm_start_assigns_exact_population_moments():
+    estimator = MomentEstimator(dim=3, mode="ema", beta=0.999)
+    first = torch.tensor([[1.0, 2.0, 3.0], [2.0, 0.0, 1.0]])
+    second = torch.tensor([[4.0, 1.0, 2.0]])
+    population = torch.cat([first, second])
+
+    estimator.accumulate_initialization(first)
+    estimator.accumulate_initialization(second)
+    estimator.finalize_initialization()
+
+    assert bool(estimator.initialized)
+    assert torch.allclose(estimator.m1, population.mean(dim=0))
+    assert torch.allclose(estimator.m2, population.T @ population / population.shape[0])
 
 
 def test_queue_estimator_is_finite_and_differentiable():

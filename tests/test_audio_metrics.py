@@ -7,6 +7,7 @@ from eval.audio_metrics import (
     density_coverage,
     embedding_cosine_score,
     frechet_audio_distance,
+    kernel_audio_distance,
     monge_audio_distance,
     vendi_score,
 )
@@ -72,6 +73,42 @@ def test_fd_and_mind_increase_for_shifted_distribution():
 
     assert fad.item() > 4.9
     assert mind.item() > 0.1
+
+
+def test_kad_matches_unbiased_rbf_mmd():
+    real = torch.tensor([[0.0], [2.0], [5.0]])
+    fake = torch.tensor([[1.0], [3.0], [4.0]])
+    bandwidth = 2.0
+    gamma = 1.0 / (2.0 * bandwidth**2 + 1e-8)
+
+    def kernel(x, y):
+        return torch.exp(-gamma * torch.cdist(x, y).square())
+
+    k_real = kernel(real, real)
+    k_fake = kernel(fake, fake)
+    expected = 100.0 * (
+        (k_real.sum() - k_real.diagonal().sum()) / 6
+        + (k_fake.sum() - k_fake.diagonal().sum()) / 6
+        - 2.0 * kernel(real, fake).mean()
+    )
+    result = kernel_audio_distance(real, fake, bandwidth=bandwidth)
+
+    assert result["kad"].item() == pytest.approx(expected.item(), abs=1e-6)
+    assert result["bandwidth"].item() == pytest.approx(bandwidth)
+
+
+def test_kad_uses_reference_median_bandwidth_and_detects_shift():
+    real = torch.tensor([[0.0], [1.0], [3.0], [6.0]])
+    same = kernel_audio_distance(real, real)
+    shifted = kernel_audio_distance(real, real + 20.0)
+
+    assert same["bandwidth"].item() == pytest.approx(torch.pdist(real).median().item())
+    assert shifted["kad"].item() > same["kad"].item()
+
+
+def test_kad_requires_two_embeddings_per_set():
+    with pytest.raises(ValueError, match="at least two"):
+        kernel_audio_distance(torch.zeros(1, 2), torch.zeros(2, 2))
 
 
 def test_vendi_score_detects_collapse_vs_orthogonal_diversity():
