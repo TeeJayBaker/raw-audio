@@ -104,12 +104,12 @@ class Transformer(nn.Module):
         t: torch.Tensor | None = None,
         cond: torch.Tensor | None = None,
         length: int | None = None,
-    ) -> torch.Tensor:
+        return_spec: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
         x = as_waveform(x)
         target = int(length or x.shape[-1])
         t_embed = self.time_embed(t) if t is not None else None
-        if cond is not None:
-            cond = self.cond_embed(cond)
+        cond = self.cond_embed(cond)
         cond = self.cond_combine(t_embed, cond)
 
         if self.stft is not None:
@@ -126,6 +126,8 @@ class Transformer(nn.Module):
         if self.stft is not None:
             y = center_crop_or_pad(y, h_in.shape[-1])
             spec = channels_to_complex(y, self.out_channels, self.stft.freq_bins)
-            return stft_to_waveform(spec, self.stft, length=target)  # fp32
+            wav = stft_to_waveform(spec, self.stft, length=target)  # fp32
+            return (wav, spec) if return_spec else wav
         # fp32 audio out regardless of AMP state (ConvHead/Identity stays bf16 under AMP).
-        return center_crop_or_pad(self.head(y), target).float()
+        out = center_crop_or_pad(self.head(y), target).float()
+        return (out, None) if return_spec else out

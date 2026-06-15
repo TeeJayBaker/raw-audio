@@ -31,8 +31,10 @@ conditioner:
 loss:
   loss_space: v
   primary: mse
-  mr_stft_weight: 0.0
+  mr_stft_weight: 1.0
   mr_stft_log_weight: 0.0
+  wavefm_weight: 0.0  # WaveFM aux bundle (phase + log-mag + grad/Laplacian + mel-L1) on the waveform
+  complex_stft_weight: 0.0  # complex L1 on the transformer's pre-iSTFT spec (stft transformer only)
 
 optimizer:
   _target_: torch.optim.AdamW

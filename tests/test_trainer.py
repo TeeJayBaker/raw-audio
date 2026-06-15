@@ -20,9 +20,9 @@ def _compose(overrides: list[str]):
     return cfg
 
 
-def _write_dataset(root: Path, sample_rate: int = 8000, n: int = 4) -> None:
+def _write_dataset(root: Path, sample_rate: int = 8000, n: int = 4, seconds: float = 0.04) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    t = np.linspace(0.0, 0.04, int(sample_rate * 0.04), dtype=np.float32)
+    t = np.linspace(0.0, seconds, int(sample_rate * seconds), dtype=np.float32)
     for i in range(n):
         signal = 0.5 * np.sin(2.0 * math.pi * (110.0 + 20.0 * i) * t)
         sf.write(root / f"tone_{i}.wav", signal, sample_rate)
@@ -81,3 +81,57 @@ def test_rftrainer_resumes_from_latest_checkpoint(tmp_path: Path):
     resumed.run()
     assert resumed.step == 4
     assert (run_dir / "checkpoints" / "step_00000004.pt").exists()
+
+
+def _stft_trainer_overrides(data_root: Path, run_dir: Path) -> list[str]:
+    return [
+        f"data.root={data_root}",
+        f"train.run_dir={run_dir}",
+        "train.wandb.enabled=false",
+        "train.device=cpu",
+        "train.amp=false",
+        "data.sample_rate=8000",
+        "data.min_seconds=0.3",
+        "data.max_seconds=0.3",
+        "data.channels=1",
+        "data.augmentations.enabled=false",
+        "backbone.sample_rate=8000",
+        "backbone.stft.n_fft=64",
+        "backbone.stft.hop_length=16",
+        "backbone.stft.win_length=64",
+        "backbone.block.dim=32",
+        "backbone.block.depth=1",
+        "backbone.block.heads=2",
+        "backbone.conditioning.cond_dim=16",
+        "backbone.conditioning.embed_dim=16",
+        "eval.metrics.embedding_validation.enabled=false",
+        "train.dataloader.batch_size=2",
+        "train.dataloader.num_workers=0",
+        "train.dataloader.drop_last=false",
+        "loss.wavefm_weight=1.0",
+        "loss.complex_stft_weight=1.0",
+    ]
+
+
+def test_rftrainer_applies_wavefm_and_complex_aux_losses(tmp_path: Path):
+    from omegaconf import OmegaConf
+
+    data_root = tmp_path / "data"
+    _write_dataset(data_root, sample_rate=8000, seconds=0.3)
+    GlobalHydra.instance().clear()
+    with hydra.initialize_config_dir(version_base=None, config_dir=str(CONFIG_DIR)):
+        cfg = hydra.compose(
+            config_name="experiment/fm_oneshots_mars_stft",
+            overrides=_stft_trainer_overrides(data_root, tmp_path / "run"),
+        )
+    cfg.conditioner = OmegaConf.create({"type": "null", "embedding_dim": 16})
+
+    trainer = RFTrainer(cfg)
+    batch = next(iter(trainer.train_loader))
+    audio = batch["audio"].to(trainer.device)
+    cond = trainer.condition(audio, trainer.sample_rate, batch["audio_lengths"].to(trainer.device))
+    loss, terms = trainer.training_step(audio, cond)
+    loss.backward()
+
+    assert {"wavefm", "complex_stft"} <= set(terms)
+    assert math.isfinite(float(loss)) and float(loss) > 0

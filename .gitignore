@@ -29,9 +29,11 @@ experiments/**/checkpoints/
 experiments/**/samples/
 experiments/**/logs/
 experiments/**/wandb/
+experiments/**/*.wav
 **/checkpoints/
 **/samples/
 *.ckpt
+*.onnx
 *.pt
 *.pth
 *.safetensors

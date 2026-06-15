@@ -24,7 +24,7 @@ from emb.factory import build_embedding, build_embedding_backend, build_embeddin
 from flow.factory import build_method as build_flow_method
 from flow.fm import EPS
 from loggers import init_wandb, save_wavs, wandb_cfg, wandb_val_metrics
-from losses.audio import mr_stft_loss
+from losses.audio import complex_stft_loss, mr_stft_loss, wavefm_loss
 from losses.dist import FrechetLoss, compute_real_moments
 from validation import embedding_metric_cfg, generate_examples, validate_metrics
 
@@ -376,8 +376,12 @@ class RFTrainer(BaseTrainer):
             rms = audio.pow(2).mean(dim=(-2, -1), keepdim=True).sqrt().clamp_min(1e-8)
             audio = self.lift_scale * torch.tanh((self.rms_target / rms) * audio)
         x_t, t, x1 = self.method.train_tuple(audio, t=self._sample_t(audio))
+        complex_weight = float(loss_cfg.get("complex_stft_weight", 0.0))
         with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.amp_enabled):
-            pred = self.model(x_t, t=t, cond=cond, length=audio.shape[-1])
+            if complex_weight > 0.0:
+                pred, pred_spec = self.model(x_t, t=t, cond=cond, length=audio.shape[-1], return_spec=True)
+            else:
+                pred = self.model(x_t, t=t, cond=cond, length=audio.shape[-1])
             total, terms = self.method.loss(
                 pred,
                 x1,
@@ -391,6 +395,15 @@ class RFTrainer(BaseTrainer):
                 aux = mr_stft_loss(pred, x1, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)))
                 total = total + mr_stft_weight * aux
                 terms = {**terms, "mr_stft": aux}
+            wavefm_weight = float(loss_cfg.get("wavefm_weight", 0.0))
+            if wavefm_weight > 0.0:
+                wf, wf_terms = wavefm_loss(pred, x1, sample_rate=self.model.sample_rate)
+                total = total + wavefm_weight * wf
+                terms = {**terms, "wavefm": wf.detach(), **wf_terms}
+            if complex_weight > 0.0:
+                cx = complex_stft_loss(pred_spec, x1, self.model.stft)
+                total = total + complex_weight * cx
+                terms = {**terms, "complex_stft": cx.detach()}
         return total, terms
 
     def sample(self, shape, cond=None, noise=None) -> torch.Tensor:

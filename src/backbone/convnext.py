@@ -158,8 +158,7 @@ class ConvNeXt(nn.Module):
         x = as_waveform(x)
         target = int(length or x.shape[-1])
         t_embed = self.time_embed(t) if t is not None else None
-        if cond is not None:
-            cond = self.cond_embed(cond)
+        cond = self.cond_embed(cond)
         cond = self.cond_combine(t_embed, cond)
         # fp32 audio out regardless of head (WaveNeXtHead would otherwise return bf16 under AMP).
         return sum(branch(x, cond, target) for branch in self.branches).float()

@@ -38,13 +38,17 @@ class TimeEmbedding(nn.Module):
 
 
 class ConditioningEmbedding(nn.Module):
-    """External conditioning embedding projected to `cond_dim` by a small MLP."""
+    """External conditioning embedding projected to `cond_dim` by a small MLP.
+    ``None`` maps to the zero vector, matching the trainer's cond-dropout null."""
 
     def __init__(self, embed_dim: int, cond_dim: int):
         super().__init__()
         self.mlp = nn.Sequential(nn.Linear(embed_dim, cond_dim), nn.SiLU(), nn.Linear(cond_dim, cond_dim))
 
-    def forward(self, cond: torch.Tensor) -> torch.Tensor:
+    def forward(self, cond: torch.Tensor | None) -> torch.Tensor:
+        if cond is None:
+            weight = self.mlp[0].weight
+            cond = torch.zeros(1, weight.shape[1], device=weight.device, dtype=weight.dtype)
         return self.mlp(cond)
 
 

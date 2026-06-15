@@ -31,6 +31,13 @@ Working notes for the one-shot FM runs. Supersedes `fm_runs_failure_investigatio
   logged samples and val-embedding metrics.
 - Recommended recipe = ConvNeXt trunk + iSTFT `realimag` head (`vocos` config) +
   `sep_norm` + gate, x-pred/v-loss. Overfit: retrieval 8/8, genRMS 0.306 at 10k steps.
+- `ConditioningEmbedding` maps `cond=None` to the zero vector through the cond MLP
+  (`src/backbone/conditioning.py`), so the CFG uncond branch now matches the
+  cond-dropout null the model trained on. Previously `_model_v`'s `cond=None` bypassed
+  the MLP and the combiner fell back to bare `t_embed` — an untrained null (output rms
+  delta 0.55 vs 0.93 signal). Recon check, stft-b64 100k, s=3.5 / 25 steps, 10 clips:
+  mean MATPAC cosine 0.712 -> 0.775, 9/10 improved
+  (`experiments/cfg_sampling/listen/`).
 - Refuted hypotheses (do not revisit): `rms_lift=false` is not the cause of the
   original collapse; the x-pred `1/(1-t)^2` v-loss weighting is the published recipe,
   not a bug; the ODE sampler (Heun/step count) is not the issue; STFT framing is fine.
@@ -39,8 +46,15 @@ Working notes for the one-shot FM runs. Supersedes `fm_runs_failure_investigatio
 
 - Re-run the cond-vs-no-cond probe and a 50k vocos run end-to-end with the merged
   fixes to confirm rail% ~ 0 and intelligible audio across `s in {1.0, 1.5, 2.5, 3.5}`.
-- A/B guidance-rescale (`phi=0.7`) and `[0, 0.8]` interval against the plain-CFG
-  baseline on val embedding metrics, once implemented.
+- CFG interval sweep on stft-200k @ 50k (`experiments/cfg_sampling/sweep.py`, n=64,
+  out/sweep_fm-oneshots-mars-stft-200k_step_00050000_zeros.json): guidance hurts near
+  *data*, not near noise — `[0, 0.8)` t-interval (on from noise, off for the final
+  ~20%) at s=2.5–3.5 beats both full-interval CFG (KAD 6.45–6.56 vs 7.9–8.8 at 16
+  steps) and no guidance (6.91); cos/retr 0.81/0.80 vs 0.786/0.73. Optimum is flat
+  over hi ∈ [0.6, 0.9] and s ∈ [2.5, 3.5]; lo-exclusion does nothing on KAD but
+  `[0.2, 0.8)` trims genRMS inflation (0.185 vs 0.211). Image-domain folklore
+  (drop high-noise guidance) does NOT transfer. Guidance-rescale (`phi`) still
+  untested; `sampling.guidance_interval` still un-implemented in src.
 - Transformer at `patch_size ~ 128` is the documented fallback; current
   `fm_oneshots_mars_waveform.yaml` uses a larger patch (verify before any retrain).
 - WaveNeXt head is slow on amplitude, not broken: if keeping it, enable

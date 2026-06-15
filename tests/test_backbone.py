@@ -186,3 +186,35 @@ def test_benchmark_backbone():
     )
     assert "params:" in result.stdout
     assert "xRT:" in result.stdout
+
+
+def test_transformer_return_spec_matches_waveform_and_reconstructs():
+    torch.manual_seed(0)
+    model = Transformer(
+        channels=1,
+        stft={"n_fft": 64, "hop_length": 16, "win_length": 64},
+        block={"dim": 32, "depth": 1, "heads": 2},
+        conditioning={"cond_dim": 16, "embed_dim": 16},
+        sample_rate=8000,
+    )
+    x = torch.randn(2, 1, 256)
+    t = torch.tensor([0.3, 0.7])
+    cond = torch.randn(2, 16)
+    wav = model(x, t=t, cond=cond)
+    wav2, spec = model(x, t=t, cond=cond, return_spec=True)
+    assert torch.is_complex(spec)
+    assert torch.allclose(wav, wav2, atol=1e-6)
+    # spec is the pre-iSTFT prediction; iSTFT(spec) reproduces the waveform output exactly.
+    recon = stft_to_waveform(spec, model.stft, length=x.shape[-1])
+    assert torch.allclose(recon, wav, atol=1e-5)
+
+
+def test_transformer_return_spec_is_none_without_stft():
+    model = Transformer(
+        channels=1,
+        block={"dim": 16, "depth": 1, "heads": 2},
+        conditioning={"cond_dim": 8, "embed_dim": 8},
+        sample_rate=8000,
+    )
+    wav, spec = model(torch.randn(1, 1, 128), t=torch.tensor([0.5]), cond=torch.randn(1, 8), return_spec=True)
+    assert spec is None and wav.shape == (1, 1, 128)
