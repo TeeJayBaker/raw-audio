@@ -1,0 +1,20 @@
+method: mean_flow
+t_encoding:
+  type: sinusoidal
+  scale: 100.0
+eps: 1e-5
+t_distribution: logit_normal
+logit_mean: 0.4  # iMF -0.4 mirrored to repo t-axis (0=noise, 1=data)
+logit_std: 1.0
+mf:
+  rf_fraction: 0.5
+  rf_warmup_steps: 0
+  dudt: dde
+  dde_eps: 0.005
+  adaptive_p: 1.0
+  adaptive_c: 1.0e-3
+guidance:
+  enabled: true
+  omega_max: 8.0
+  condition_interval: false
+  interval: [0.0, 0.8]  # measured RF sweep: guidance hurts near data

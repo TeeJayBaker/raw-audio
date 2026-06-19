@@ -16,6 +16,13 @@ from backbone.io import (
 )
 
 
+def _zero_init_time_embed(cond_dim: int, time_scale: float) -> TimeEmbedding:
+    emb = TimeEmbedding(cond_dim, time_scale=time_scale)
+    nn.init.zeros_(emb.mlp[-1].weight)
+    nn.init.zeros_(emb.mlp[-1].bias)
+    return emb
+
+
 class ConvHead(nn.Module):
     def __init__(self, channels: int, kernel_size: int = 13):
         super().__init__()
@@ -63,6 +70,27 @@ class Transformer(nn.Module):
         self.dim = dim
         self.cond_dim = int(conditioning["cond_dim"])
         self.time_embed = TimeEmbedding(self.cond_dim, time_scale=conditioning.get("time_scale", 1.0))
+        time_scale = float(conditioning.get("time_scale", 1.0))
+        self.gap_embed = (
+            _zero_init_time_embed(self.cond_dim, time_scale)
+            if conditioning.get("gap_embed", False)
+            else None
+        )
+        self.omega_embed = (
+            _zero_init_time_embed(self.cond_dim, float(conditioning.get("omega_scale", 1.0)))
+            if conditioning.get("guidance_embed", False)
+            else None
+        )
+        self.lo_embed = (
+            _zero_init_time_embed(self.cond_dim, time_scale)
+            if conditioning.get("interval_embed", False)
+            else None
+        )
+        self.hi_embed = (
+            _zero_init_time_embed(self.cond_dim, time_scale)
+            if conditioning.get("interval_embed", False)
+            else None
+        )
         self.cond_embed = ConditioningEmbedding(int(conditioning.get("embed_dim", self.cond_dim)), self.cond_dim)
         self.cond_combine = ConditioningCombiner(self.cond_dim)
 
@@ -102,13 +130,31 @@ class Transformer(nn.Module):
         self,
         x: torch.Tensor,
         t: torch.Tensor | None = None,
+        h: torch.Tensor | None = None,
         cond: torch.Tensor | None = None,
+        omega: torch.Tensor | None = None,
+        t_lo: torch.Tensor | None = None,
+        t_hi: torch.Tensor | None = None,
         length: int | None = None,
         return_spec: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
         x = as_waveform(x)
         target = int(length or x.shape[-1])
         t_embed = self.time_embed(t) if t is not None else None
+        if h is not None and self.gap_embed is None:
+            raise ValueError("Backbone got `h` but conditioning.gap_embed is false")
+        if omega is not None and self.omega_embed is None:
+            raise ValueError("Backbone got `omega` but conditioning.guidance_embed is false")
+        if (t_lo is not None or t_hi is not None) and self.lo_embed is None:
+            raise ValueError("Backbone got interval bounds but conditioning.interval_embed is false")
+        if t_embed is not None:
+            if self.gap_embed is not None:
+                t_embed = t_embed + self.gap_embed(torch.zeros_like(t) if h is None else h)
+            if self.omega_embed is not None:
+                t_embed = t_embed + self.omega_embed(torch.ones_like(t) if omega is None else omega)
+            if self.lo_embed is not None:
+                t_embed = t_embed + self.lo_embed(torch.zeros_like(t) if t_lo is None else t_lo)
+                t_embed = t_embed + self.hi_embed(torch.ones_like(t) if t_hi is None else t_hi)
         cond = self.cond_embed(cond)
         cond = self.cond_combine(t_embed, cond)
 

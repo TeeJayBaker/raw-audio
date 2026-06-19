@@ -3,6 +3,12 @@ from __future__ import annotations
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+try:
+    from backbone.jvp_flash_attention import flash_attn_jvp
+except ImportError:  # triton unavailable (e.g. CPU-only env); JVP falls back to the MATH backend
+    flash_attn_jvp = None
 
 
 class RMSNorm(nn.Module):
@@ -48,6 +54,17 @@ def _rope(x: torch.Tensor) -> torch.Tensor:
 
 
 class Attention(nn.Module):
+    # Forward-AD attention path, enabled only around a torch.func.jvp call (MeanFlow's jvp
+    # tangent). Class-level so MeanFlow.u_and_dudt can flip every layer at once.
+    _use_triton_jvp: bool = False
+
+    @classmethod
+    def set_triton_jvp(cls, enabled: bool) -> None:
+        """Toggle the forward-AD attention path. On CUDA it routes to the Triton
+        flash-attention-JVP kernel; otherwise to the MATH SDPA backend (the fused kernels
+        lack forward-AD). Normal training (flag off) keeps the optimised fused SDPA."""
+        cls._use_triton_jvp = enabled
+
     def __init__(self, dim: int, heads: int = 4, dropout: float = 0.0, rope: bool = True, qk_norm: bool = True):
         super().__init__()
         if dim % heads:
@@ -72,7 +89,16 @@ class Attention(nn.Module):
         if self.qk_norm:
             q = F.normalize(q, dim=-1)
             k = F.normalize(k, dim=-1)
-        y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0)
+        if self._use_triton_jvp:
+            if self.training and self.dropout:
+                raise ValueError("JVP attention path does not support dropout; set block.dropout=0")
+            if flash_attn_jvp is not None and q.is_cuda:
+                y = flash_attn_jvp(q.float(), k.float(), v.float()).to(v.dtype)
+            else:
+                with sdpa_kernel(SDPBackend.MATH):
+                    y = F.scaled_dot_product_attention(q, k, v)
+        else:
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0)
         return self.out(y.transpose(1, 2).reshape(b, n, d))
 
 

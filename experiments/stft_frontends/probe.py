@@ -91,9 +91,11 @@ class ProbeModel(nn.Module):
     positional scheme.
     """
 
-    def __init__(self, frontend: str, n_bottleneck: int | None = None):
+    def __init__(self, frontend: str, n_bottleneck: int | None = None,
+                 patch_f: int | None = None, patch_t: int | None = None):
         super().__init__()
         self.frontend = frontend
+        self.sample_rate = SR
         self.stft = STFTConfig.from_dict(STFT)
         f = self.stft.freq_bins  # 1025
         # --- shared trunk (seeded so init matches across front-ends) ---
@@ -116,11 +118,14 @@ class ProbeModel(nn.Module):
                                          nn.Conv1d(n_bottleneck, DIM, 1))
             self.out_proj = nn.Conv1d(DIM, 2 * f, 1)  # output full-rank (input-only bottleneck)
         elif frontend == "square":
-            self.fp, self.tp = SQ_FP, SQ_TP
+            self.fp, self.tp = patch_f or SQ_FP, patch_t or SQ_TP
             self.fpad = (-f) % self.fp  # 1025 -> 1152 (9 patches)
             self.npf = (f + self.fpad) // self.fp
             feat = 2 * self.fp * self.tp
-            self.in_proj = nn.Linear(feat, DIM)
+            if n_bottleneck:  # JiT linear input bottleneck on the patch projection (input-only)
+                self.in_proj = nn.Sequential(nn.Linear(feat, n_bottleneck, bias=False), nn.Linear(n_bottleneck, DIM))
+            else:
+                self.in_proj = nn.Linear(feat, DIM)
             self.out_proj = nn.Linear(DIM, feat)
             ntok = self.npf * (self._tpad_frames() // self.tp)
         elif frontend == "band":
@@ -140,7 +145,7 @@ class ProbeModel(nn.Module):
 
     def _tpad_frames(self) -> int:
         n = self._frames()
-        return n + ((-n) % SQ_TP)
+        return n + ((-n) % self.tp)
 
     def _cond(self, t, cond):
         t_embed = self.time_embed(t) if t is not None else None
@@ -186,7 +191,7 @@ class ProbeModel(nn.Module):
         s_hi = channels_to_complex(self.out_hi(h[:, :, 1].transpose(1, 2)), 1, FREQ - self.fsplit)
         return torch.cat([s_lo, s_hi], dim=2)  # [B,1,F,T] complex
 
-    def forward(self, x, t=None, cond=None, length=None):
+    def forward(self, x, t=None, cond=None, length=None, return_spec=False):
         x = as_waveform(x)
         target = int(length or x.shape[-1])
         cond = self._cond(t, cond)
@@ -211,7 +216,8 @@ class ProbeModel(nn.Module):
             spec_out = self._untok_square(h, frames)
         else:
             spec_out = self._untok_band(h)
-        return stft_to_waveform(spec_out, self.stft, length=target)
+        wav = stft_to_waveform(spec_out, self.stft, length=target)
+        return (wav, spec_out) if return_spec else wav
 
 
 def make_model(kwargs, dev):
@@ -278,7 +284,7 @@ def logstft_l1(a, b):
     return tot / 3.0
 
 
-def run(label, kwargs, nclip, C, CONDS, conditioner, dev, steps, B):
+def run(label, kwargs, nclip, C, CONDS, conditioner, dev, steps, B, train_seed=None):
     model = make_model(kwargs, dev)
     nparams = sum(p.numel() for p in model.parameters()) / 1e6
     ntok = model.ntok
@@ -288,6 +294,8 @@ def run(label, kwargs, nclip, C, CONDS, conditioner, dev, steps, B):
     n = C.shape[0]
     t0 = time.time()
     model.train()
+    if train_seed is not None:
+        torch.manual_seed(train_seed)
     final_loss = float("nan")
     for s in range(steps):
         idx = torch.randint(0, n, (B,), device=dev)

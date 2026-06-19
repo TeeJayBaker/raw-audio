@@ -218,3 +218,56 @@ def test_transformer_return_spec_is_none_without_stft():
     )
     wav, spec = model(torch.randn(1, 1, 128), t=torch.tensor([0.5]), cond=torch.randn(1, 8), return_spec=True)
     assert spec is None and wav.shape == (1, 1, 128)
+
+
+def _tiny_transformer(gap_embed=False, guidance_embed=False, interval_embed=False):
+    return Transformer(
+        channels=1,
+        stft={"n_fft": 64, "hop_length": 16, "win_length": 64},
+        block={"dim": 32, "depth": 1, "heads": 2},
+        conditioning={
+            "cond_dim": 16,
+            "embed_dim": 16,
+            "gap_embed": gap_embed,
+            "guidance_embed": guidance_embed,
+            "interval_embed": interval_embed,
+        },
+        sample_rate=8000,
+    )
+
+
+def test_aux_embeds_zero_init_are_exact_rf_warm_start():
+    torch.manual_seed(0)
+    rf = _tiny_transformer()
+    mf = _tiny_transformer(gap_embed=True, guidance_embed=True, interval_embed=True)
+    missing, unexpected = mf.load_state_dict(rf.state_dict(), strict=False)
+    assert not unexpected
+    assert all(
+        any(tag in key for tag in ("gap_embed", "omega_embed", "lo_embed", "hi_embed"))
+        for key in missing
+    )
+
+    x = torch.randn(2, 1, 256)
+    t = torch.tensor([0.3, 0.7])
+    cond = torch.randn(2, 16)
+    kw = {
+        "h": torch.tensor([0.5, 0.2]),
+        "omega": torch.tensor([3.0, 5.0]),
+        "t_lo": torch.tensor([0.1, 0.2]),
+        "t_hi": torch.tensor([0.8, 0.9]),
+    }
+    assert torch.allclose(mf(x, t=t, cond=cond, **kw), rf(x, t=t, cond=cond), atol=1e-6)
+    assert torch.allclose(mf(x, t=t, cond=cond), rf(x, t=t, cond=cond), atol=1e-6)
+
+
+def test_aux_inputs_without_embeds_raise():
+    rf = _tiny_transformer()
+    x = torch.randn(1, 1, 256)
+    t = torch.tensor([0.5])
+    cond = torch.randn(1, 16)
+    with pytest.raises(ValueError, match="gap_embed"):
+        rf(x, t=t, h=torch.tensor([0.5]), cond=cond)
+    with pytest.raises(ValueError, match="guidance_embed"):
+        rf(x, t=t, omega=torch.tensor([3.0]), cond=cond)
+    with pytest.raises(ValueError, match="interval_embed"):
+        rf(x, t=t, t_hi=torch.tensor([0.8]), cond=cond)

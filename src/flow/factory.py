@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from flow.fm import RectifiedFlow
+from flow.mf import MeanFlow
 
 # Generative-method protocol: a stateless object exposing ``train_tuple``/``loss`` and a
 # differentiable ``generate(model, shape, cond, noise, steps, ...) -> audio`` (with a no-grad
@@ -10,6 +11,7 @@ from flow.fm import RectifiedFlow
 # factory, so it inherits the base model's generation without naming a concrete method.
 _METHODS: dict[str, type] = {
     "rectified_flow": RectifiedFlow,
+    "mean_flow": MeanFlow,
 }
 
 

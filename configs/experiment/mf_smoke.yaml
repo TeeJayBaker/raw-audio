@@ -1,0 +1,81 @@
+# @package _global_
+
+defaults:
+  - /train/default@train
+  - /data/audio_directory@data
+  - /flow/mf@flow
+  - /backbone/stft_transformer@backbone
+  - /eval/preliminary@eval
+  - _self_
+
+trainer:
+  _target_: trainer.MFTrainer
+
+conditioner:
+  type: "null"
+  embedding_dim: 16
+
+backbone:
+  sample_rate: 8000
+  stft:
+    n_fft: 64
+    hop_length: 16
+    win_length: 64
+  block:
+    dim: 32
+    depth: 1
+    heads: 2
+  conditioning:
+    cond_dim: 16
+    embed_dim: 16
+    gap_embed: true
+    guidance_embed: true
+    interval_embed: false
+    time_scale: ${flow.t_encoding.scale}
+
+flow:
+  mf:
+    rf_warmup_steps: 1
+
+loss:
+  loss_space: v
+  primary: mse
+  mr_stft_weight: 0.0
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1e-3
+  weight_decay: 0.01
+  betas: [0.9, 0.95]
+
+data:
+  root: data/fm-smoke
+  sample_rate: 8000
+  min_seconds: 0.032
+  max_seconds: 0.032
+  channels: 1
+  augmentations:
+    enabled: false
+
+train:
+  run_dir: runs/mf-smoke
+  device: cpu
+  max_steps: 4
+  amp: false
+  ema_decay: 0.9
+  warmup_steps: 0
+  val_fraction: 0.5
+  log_every: 1
+  val_every: 2
+  sample_every: 2
+  ckpt_every: 2
+  dataloader:
+    batch_size: 2
+    num_workers: 0
+    pin_memory: false
+    drop_last: false
+
+sampling:
+  batch_size: 1
+  steps: 1
+  guidance_scale: 1.0

@@ -24,6 +24,7 @@ dependencies = [
     "transformers>=5.9.0",
     "onnx>=1.21.0",
     "onnxruntime>=1.26.0",
+    "setuptools>=82.0.1",
 ]
 
 [dependency-groups]
@@ -56,7 +57,12 @@ testpaths = ["src", "experiments", "scripts", "tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["src/optim/muon.py"]  # vendored verbatim from KellerJordan/Muon (MIT)
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]  # line-length handled by formatter
+
+[tool.ruff.lint.per-file-ignores]
+# Ported Triton kernel (from ../flow-one-shot): `O` (output) is standard flash-attention notation.
+"src/backbone/jvp_flash_attention.py" = ["E741"]

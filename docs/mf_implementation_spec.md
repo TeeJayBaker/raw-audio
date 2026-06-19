@@ -101,9 +101,10 @@ rows self-resolve (cond already zeroed ⇒ `v̂_c = v̂_∅` ⇒ correction 0), 
 
 **Interval, two modes** (one flag `flow.guidance.condition_interval`):
 
-- **fixed** (default): `t_lo, t_hi` are config constants (`guidance.interval = [lo, hi]`); the
-  network is **not** conditioned on the interval (only on ω). The fixed mask shapes the targets
-  and bakes one interval into the model. 3 AdaLN scalars (t, h, ω).
+- **fixed** (default): `t_lo, t_hi` are config constants (`guidance.interval = [0.0, 0.8]` by
+  default, based on the repository RF sweep); the network is **not** conditioned on the interval
+  (only on ω). The fixed mask shapes the targets and bakes one interval into the model. 3 AdaLN
+  scalars (t, h, ω).
 - **conditioned**: per-row `t_lo ~ U(0, 0.5)`, `t_hi ~ U(0.5, 1)` sampled and fed to the network
   (so both bounds are tunable at inference); mask uses the per-row bounds. 5 AdaLN scalars
   (t, h, ω, t_lo, t_hi) — see the Task 1 AdaLN-overload note.
@@ -114,7 +115,10 @@ off nearer noise.
 
 **Tangent for the MF JVP/DDE:**
 
-- guidance **on**: `v_tgt = v_g`, tangent = `v_g`.
+- guidance **on**: `v_tgt = v_g`, tangent = the model's conditioned boundary velocity
+  `v̂_c = target_to_v(model(x_t, t, cond=c, ω, t_lo, t_hi), x_t, t)`. Keep the stochastic
+  guided velocity as the regression target only; using it as the tangent reintroduces the
+  conditional-velocity variance that iMF removes.
 - guidance **off** (`flow.guidance` null/disabled): `v_tgt = v_cond`, tangent = the model's own
   boundary (`h=0`) velocity `target_to_v(model(x_t, t, cond))` — iMF's low-variance marginal
   tangent; do **not** use `v_cond` as the tangent.
@@ -129,8 +133,10 @@ off nearer noise.
   du/dt ≈ [u_θ(z+εv̄, t+ε, h−ε) − u_θ(z−εv̄, t−ε, h+ε)] / 2ε      # v̄ = tangent
   ```
 
-  Overshooting `t ± ε` slightly past `[EPS, 1−EPS]` is harmless; do not add edge clamps. ω/t_lo/
-  t_hi are held fixed across the perturbation (only z, t, h move).
+  Overshooting `t ± ε` slightly past `[EPS, 1−EPS]` is harmless; do not add edge clamps.
+  `target_to_v` must preserve the sign of `1−t` when flooring its magnitude near zero so the
+  `t+ε > 1` probe remains valid even with `adaptive_p=0`. ω/t_lo/t_hi are held fixed across the
+  perturbation (only z, t, h move).
 - `jvp`: `torch.func.jvp(u_fn, (z, t, h), (v̄, 1, −1))`. One isolated call site — this is where
   the Triton flash-attention-JVP kernel plugs in later.
 
@@ -447,7 +453,8 @@ def guided_velocity_target(
     interval_hi,
     model_t_lo: torch.Tensor | None = None,
     model_t_hi: torch.Tensor | None = None,
-) -> torch.Tensor:
+    return_boundary: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """iMF flexible CFG (ω as a conditioning input): target = v_cond + (1−1/ω)·1[t∈[lo,hi]]·(sg[v̂_c]−sg[v̂_∅]).
     ω is fed to the network so guidance is tunable in one forward at inference. `interval_lo/hi` are the
     mask bounds (scalars for fixed mode, per-row [B] tensors for conditioned mode). `model_t_lo/hi` are the
@@ -460,7 +467,8 @@ def guided_velocity_target(
     v_u = self.target_to_v(model(x_t, t=t, cond=torch.zeros_like(cond), omega=omega, t_lo=model_t_lo, t_hi=model_t_hi, length=length), x_t, t)
     coeff = 1.0 - 1.0 / self._time_like(omega, v_cond)
     mask = self._time_like(((t >= interval_lo) & (t <= interval_hi)).to(v_cond.dtype), v_cond)
-    return v_cond + coeff * mask * (v_c - v_u)
+    v_guided = v_cond + coeff * mask * (v_c - v_u)
+    return (v_guided, v_c) if return_boundary else v_guided
 ```
 
 Create `src/flow/mf.py`:
@@ -634,11 +642,15 @@ def _guidance_inputs(self, audio: torch.Tensor):
     return omega, float(lo), float(hi), None, None
 ```
 
-- [ ] **Step 3: guided target.** Rewrite `RFTrainer.training_step` body (after `_lift`) so the
-prediction is ω-conditioned and the target is the guided velocity when guidance is on:
+- [ ] **Step 3: guided target.** Factor the RF body into
+`_rf_step(audio, cond, adaptive=False)` and have `training_step` call it with `adaptive=False`.
+The prediction is ω-conditioned and the target is the guided velocity when guidance is on:
 
 ```python
 def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
+    return self._rf_step(audio, cond, adaptive=False)
+
+def _rf_step(self, audio: torch.Tensor, cond: torch.Tensor | None, adaptive: bool):
     loss_cfg = self.cfg.loss
     audio = self._lift(audio)
     x_t, t, x1 = self.method.train_tuple(audio, t=self._sample_t(audio))
@@ -653,11 +665,19 @@ def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
             target = self.method.v_to_target(v_g, x_t, t)
         else:
             target = x1
-        total, terms = self.method.loss(
-            pred, target, x_t, t,
-            space=str(loss_cfg.get("loss_space", "v")),
-            loss_type=str(loss_cfg.get("primary", "mse")),
-        )
+        if adaptive:
+            total, terms = self.method.mf_loss(
+                self.method.target_to_v(pred, x_t, t),
+                self.method.target_to_v(target, x_t, t),
+                p=self.adaptive_p, c=self.adaptive_c,
+            )
+            terms = {"rf_mse": terms["mf_mse"]}
+        else:
+            total, terms = self.method.loss(
+                pred, target, x_t, t,
+                space=str(loss_cfg.get("loss_space", "v")),
+                loss_type=str(loss_cfg.get("primary", "mse")),
+            )
         mr_stft_weight = float(loss_cfg.get("mr_stft_weight", 0.0))
         if mr_stft_weight > 0.0:
             aux = mr_stft_loss(pred, x1, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)))
@@ -667,6 +687,10 @@ def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
 ```
 
 (MR-STFT aux stays against the real `x1` — a spectral anchor to data, not the guided field.)
+Add `_mr_stft_aux(pred, x1, t)`: when `loss.mr_stft_t_min` is set, subset to rows with
+`t >= mr_stft_t_min`; when absent, preserve the existing all-row behavior. `MFTrainer` calls
+`_rf_step(..., adaptive=True)`, which converts prediction/target to velocity and applies
+`MeanFlow.mf_loss` so the RF anchor and MF batches use the same adaptive weighting.
 
 - [ ] **Step 4:** `uv run pytest tests/test_trainer.py tests/test_fm_scaffold.py -v` — all pass
       (guidance defaults to null; `omega=None` path is byte-for-byte the old behaviour).
@@ -718,7 +742,7 @@ class MFTrainer(RFTrainer):
         # Whole micro-batches branch (not per-row): keeps the MF extra forwards off the
         # RF batches entirely; grad accumulation averages the mix across the step.
         if self.step < self.rf_warmup_steps or torch.rand(()).item() < self.rf_fraction:
-            return super().training_step(audio, cond)
+            return self._rf_step(audio, cond, adaptive=True)
         return self._mf_step(audio, cond)
 
     def _mf_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
@@ -731,10 +755,10 @@ class MFTrainer(RFTrainer):
         with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.amp_enabled):
             with torch.no_grad():
                 if omega is not None and cond is not None:
-                    v_tgt = self.method.guided_velocity_target(
-                        self.model, x1, x_t, t, cond, omega, length, lo, hi, model_lo, model_hi
+                    v_tgt, tangent = self.method.guided_velocity_target(
+                        self.model, x1, x_t, t, cond, omega, length, lo, hi, model_lo, model_hi,
+                        return_boundary=True,
                     )
-                    tangent = v_tgt
                 else:
                     v_tgt = self.method.target_to_v(x1, x_t, t)
                     # iMF marginal tangent: the model's own boundary (h=0) velocity, not v_cond
@@ -747,8 +771,12 @@ class MFTrainer(RFTrainer):
             V = u - self.method._time_like(h, u) * dudt
             total, terms = self.method.mf_loss(V, v_tgt, p=self.adaptive_p, c=self.adaptive_c)
             mr_stft_weight = float(loss_cfg.get("mr_stft_weight", 0.0))
-            if mr_stft_weight > 0.0:
-                aux = mr_stft_loss(x_pred, x1, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)))
+            keep = t >= float(loss_cfg.get("mr_stft_t_min", 0.2))
+            if mr_stft_weight > 0.0 and keep.any():
+                aux = mr_stft_loss(
+                    x_pred[keep], x1[keep],
+                    log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)),
+                )
                 total = total + mr_stft_weight * aux
                 terms = {**terms, "mr_stft": aux}
         return total, terms
@@ -801,7 +829,7 @@ t_encoding:
 eps: 1e-5
 # (t, h) are two draws from this distribution: t = min, h = max − min (clamped ≥ mf.dde_eps).
 t_distribution: logit_normal
-logit_mean: 0.0
+logit_mean: 0.4  # mirrors iMF's -0.4 into the repo axis (0=noise, 1=data)
 logit_std: 1.0
 mf:
   rf_fraction: 0.5      # fraction of micro-batches trained as plain RF (h=0); MeanAudio used 0.75 pre-iMF
@@ -821,7 +849,7 @@ guidance:
   enabled: true
   omega_max: 8.0
   condition_interval: false
-  interval: [0.0, 1.0]   # fixed-mode mask bounds; ignored when condition_interval: true
+  interval: [0.0, 0.8]   # measured RF sweep: guidance off near data; ignored in conditioned mode
 ```
 
 - [ ] **Step 3:** create `configs/experiment/mf_oneshots_mars_stft.yaml` (mirrors
@@ -867,6 +895,7 @@ loss:
   primary: mse
   mr_stft_weight: 1.0
   mr_stft_log_weight: 0.0
+  mr_stft_t_min: 0.2  # pMF t<=0.8 mirrored to repo axis: apply only for t>=0.2
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -1057,8 +1086,9 @@ the run dir. If the jvp run fails inside `torch.func.jvp` with a forward-AD NotI
 - Tune inference ω (`sampling.guidance_scale`) for 1-NFE and 2-NFE before any FD-loss stage;
   if `condition_interval: true`, sweep `guidance_t_lo/guidance_t_hi` too.
 - Sweep `mf.rf_fraction` (0.75 / 0.5 / 0.25).
-- `t`-distribution ablation (`logit_mean` ±0.4) — flagged as 1-NFE-protocol-sensitive in
-  `docs/fm_training_notes.md` territory.
+- Ablate the mirrored iMF default `logit_mean: 0.4` against the RF default `0.0`; the former
+  biases toward the repo's data end because the repo time axis is reversed from iMF.
 - If conditioned-interval AdaLN overload shows up (worse conditioning fidelity than fixed at
   matched steps), evaluate in-context conditioning (the iMF AdaLN→token swap).
-- Optional pMF-style perceptual gating of the MR-STFT aux at low `t` on the MF branch.
+- Sweep the pMF-style MR-STFT threshold around the mirrored default `t >= 0.2` (pMF uses
+  `t <= 0.8` on its data-to-noise axis; its longer-training `0.6` setting maps to repo `t >= 0.4`).

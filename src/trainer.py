@@ -367,43 +367,119 @@ class RFTrainer(BaseTrainer):
             t = (logits * float(flow_cfg.get("logit_std", 1.0)) + float(flow_cfg.get("logit_mean", 0.0))).sigmoid()
         return t.clamp(EPS, 1.0 - EPS)
 
+    def _lift(self, audio: torch.Tensor) -> torch.Tensor:
+        if not self.rms_lift:
+            return audio
+        # WavFlow (§3.2) amplitude lift of the target; inverse ÷lift_scale in flow sampling.
+        # tanh soft-saturates rare high-crest peaks instead of flat-topping.
+        rms = audio.pow(2).mean(dim=(-2, -1), keepdim=True).sqrt().clamp_min(1e-8)
+        return self.lift_scale * torch.tanh((self.rms_target / rms) * audio)
+
+    def _guidance_inputs(self, audio: torch.Tensor):
+        g = self.cfg.flow.get("guidance", None)
+        if not (g and g.get("enabled", False)):
+            return None, None, None, None, None
+        batch, device, dtype = audio.shape[0], audio.device, audio.dtype
+        omega_max = float(g.get("omega_max", 8.0))
+        omega = (torch.rand(batch, device=device, dtype=dtype) * math.log(omega_max)).exp()
+        if g.get("condition_interval", False):
+            t_lo = torch.rand(batch, device=device, dtype=dtype) * 0.5
+            t_hi = 0.5 + torch.rand(batch, device=device, dtype=dtype) * 0.5
+            return omega, t_lo, t_hi, t_lo, t_hi
+        lo, hi = g.get("interval", [0.0, 1.0])
+        return omega, float(lo), float(hi), None, None
+
+    def _aux_gate(self, t: torch.Tensor, *tensors: torch.Tensor):
+        """pMF-style t-gate shared by every x-space aux loss: they all anchor the predicted clean
+        signal x̂ to x1, an unreliable target at high noise (low t). Returns `tensors` row-sliced to
+        t >= loss.aux_t_min (near data); unchanged when aux_t_min is unset (default ungated); or
+        None when the gate empties the batch."""
+        t_min = self.cfg.loss.get("aux_t_min", None)
+        if t_min is None:
+            return tensors
+        keep = t >= float(t_min)
+        if not keep.any():
+            return None
+        return tuple(x[keep] for x in tensors)
+
     def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
+        return self._rf_step(audio, cond, adaptive=False)
+
+    def _rf_step(
+        self,
+        audio: torch.Tensor,
+        cond: torch.Tensor | None,
+        adaptive: bool,
+    ):
         loss_cfg = self.cfg.loss
-        if self.rms_lift:
-            # WavFlow (§3.2) amplitude lift of the target; inverse ÷lift_scale in RectifiedFlow.sample.
-            # tanh (not WavFlow's hard clamp) soft-saturates rare high-crest peaks instead of flat-topping;
-            # near-linear at r_*=0.1 so the body is just unit-RMS-normalised (lifted RMS ≈ rms_target*lift_scale).
-            rms = audio.pow(2).mean(dim=(-2, -1), keepdim=True).sqrt().clamp_min(1e-8)
-            audio = self.lift_scale * torch.tanh((self.rms_target / rms) * audio)
+        audio = self._lift(audio)
         x_t, t, x1 = self.method.train_tuple(audio, t=self._sample_t(audio))
+        length = audio.shape[-1]
+        omega, lo, hi, model_lo, model_hi = self._guidance_inputs(audio)
         complex_weight = float(loss_cfg.get("complex_stft_weight", 0.0))
+        model_kwargs = {"t": t, "cond": cond, "length": length}
+        if omega is not None:
+            model_kwargs |= {"omega": omega, "t_lo": model_lo, "t_hi": model_hi}
         with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.amp_enabled):
             if complex_weight > 0.0:
-                pred, pred_spec = self.model(x_t, t=t, cond=cond, length=audio.shape[-1], return_spec=True)
+                pred, pred_spec = self.model(x_t, return_spec=True, **model_kwargs)
             else:
-                pred = self.model(x_t, t=t, cond=cond, length=audio.shape[-1])
-            total, terms = self.method.loss(
-                pred,
-                x1,
-                x_t,
-                t,
-                space=str(loss_cfg.get("loss_space", "v")),
-                loss_type=str(loss_cfg.get("primary", "mse")),
-            )
+                pred = self.model(x_t, **model_kwargs)
+            target = x1
+            if omega is not None and cond is not None:
+                v_g = self.method.guided_velocity_target(
+                    self.model,
+                    x1,
+                    x_t,
+                    t,
+                    cond,
+                    omega,
+                    length,
+                    lo,
+                    hi,
+                    model_lo,
+                    model_hi,
+                )
+                target = self.method.v_to_target(v_g, x_t, t)
+            if adaptive:
+                pred_v = self.method.target_to_v(pred, x_t, t)
+                target_v = self.method.target_to_v(target, x_t, t)
+                total, terms = self.method.mf_loss(
+                    pred_v,
+                    target_v,
+                    p=self.adaptive_p,
+                    c=self.adaptive_c,
+                )
+                terms = {"rf_mse": terms["mf_mse"]}
+            else:
+                total, terms = self.method.loss(
+                    pred,
+                    target,
+                    x_t,
+                    t,
+                    space=str(loss_cfg.get("loss_space", "v")),
+                    loss_type=str(loss_cfg.get("primary", "mse")),
+                )
             mr_stft_weight = float(loss_cfg.get("mr_stft_weight", 0.0))
             if mr_stft_weight > 0.0:
-                aux = mr_stft_loss(pred, x1, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)))
-                total = total + mr_stft_weight * aux
-                terms = {**terms, "mr_stft": aux}
+                gated = self._aux_gate(t, pred, x1)
+                if gated is not None:
+                    aux = mr_stft_loss(*gated, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)))
+                    total = total + mr_stft_weight * aux
+                    terms = {**terms, "mr_stft": aux}
             wavefm_weight = float(loss_cfg.get("wavefm_weight", 0.0))
             if wavefm_weight > 0.0:
-                wf, wf_terms = wavefm_loss(pred, x1, sample_rate=self.model.sample_rate)
-                total = total + wavefm_weight * wf
-                terms = {**terms, "wavefm": wf.detach(), **wf_terms}
+                gated = self._aux_gate(t, pred, x1)
+                if gated is not None:
+                    wf, wf_terms = wavefm_loss(*gated, sample_rate=self.model.sample_rate)
+                    total = total + wavefm_weight * wf
+                    terms = {**terms, "wavefm": wf.detach(), **wf_terms}
             if complex_weight > 0.0:
-                cx = complex_stft_loss(pred_spec, x1, self.model.stft)
-                total = total + complex_weight * cx
-                terms = {**terms, "complex_stft": cx.detach()}
+                gated = self._aux_gate(t, pred_spec, x1)
+                if gated is not None:
+                    cx = complex_stft_loss(*gated, self.model.stft)
+                    total = total + complex_weight * cx
+                    terms = {**terms, "complex_stft": cx.detach()}
         return total, terms
 
     def sample(self, shape, cond=None, noise=None) -> torch.Tensor:
@@ -415,6 +491,141 @@ class RFTrainer(BaseTrainer):
             steps=int(self.cfg.sampling.get("steps", 1)),
             method=str(self.cfg.sampling.get("method", "euler")),
             guidance_scale=float(self.cfg.sampling.get("guidance_scale", 1.0)),
+            lift_scale=self.lift_scale if self.rms_lift else 1.0,
+        )
+        peak = audio.abs().amax(dim=tuple(range(1, audio.ndim)), keepdim=True).clamp_min(1e-8)
+        return audio / peak
+
+
+class MFTrainer(RFTrainer):
+    """MeanFlow training with mixed RF/MF micro-batches and RF checkpoint warm starts."""
+
+    def __init__(self, cfg: DictConfig):
+        super().__init__(cfg)
+        mf_cfg = _as_dict(self.cfg.flow.get("mf", {}))
+        self.rf_fraction = float(mf_cfg.get("rf_fraction", 0.5))
+        self.rf_warmup_steps = int(mf_cfg.get("rf_warmup_steps", 0))
+        self.dudt_mode = str(mf_cfg.get("dudt", "dde"))
+        self.dde_eps = float(mf_cfg.get("dde_eps", 5e-3))
+        self.adaptive_p = float(mf_cfg.get("adaptive_p", 1.0))
+        self.adaptive_c = float(mf_cfg.get("adaptive_c", 1e-3))
+        if str(self.cfg.loss.get("loss_space", "v")) != "v":
+            raise ValueError("MFTrainer requires loss.loss_space=v")
+        if str(self.cfg.loss.get("primary", "mse")) != "mse":
+            raise ValueError("MFTrainer requires loss.primary=mse")
+
+        init_from = self.cfg.train.get("init_from", None)
+        if init_from and self.step == 0:
+            state = torch.load(Path(init_from).expanduser(), map_location="cpu", weights_only=False)
+            missing, unexpected = self.model.load_state_dict(state["model"], strict=False)
+            aux = ("gap_embed", "omega_embed", "lo_embed", "hi_embed")
+            if unexpected or any(not any(tag in key for tag in aux) for key in missing):
+                raise ValueError(f"init_from mismatch: missing={missing} unexpected={unexpected}")
+            if self.ema is not None:
+                self.ema = EMA(self.model, decay=float(self.cfg.train.ema_decay))
+            tqdm.write(f"Warm-started from {init_from}")
+
+    def _sample_t_h(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        a, b = self._sample_t(audio), self._sample_t(audio)
+        t = torch.minimum(a, b)
+        h = (torch.maximum(a, b) - t).clamp_min(self.dde_eps)
+        return t, h
+
+    def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
+        if self.step < self.rf_warmup_steps or torch.rand(()).item() < self.rf_fraction:
+            return self._rf_step(audio, cond, adaptive=True)
+        return self._mf_step(audio, cond)
+
+    def _mf_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
+        loss_cfg = self.cfg.loss
+        audio = self._lift(audio)
+        t, h = self._sample_t_h(audio)
+        x_t, t, x1 = self.method.train_tuple(audio, t=t)
+        length = audio.shape[-1]
+        omega, lo, hi, model_lo, model_hi = self._guidance_inputs(audio)
+        complex_weight = float(loss_cfg.get("complex_stft_weight", 0.0))
+        with torch.amp.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16,
+            enabled=self.amp_enabled,
+        ):
+            with torch.no_grad():
+                if omega is not None and cond is not None:
+                    v_tgt, tangent = self.method.guided_velocity_target(
+                        self.model,
+                        x1,
+                        x_t,
+                        t,
+                        cond,
+                        omega,
+                        length,
+                        lo,
+                        hi,
+                        model_lo,
+                        model_hi,
+                        return_boundary=True,
+                    )
+                else:
+                    v_tgt = self.method.target_to_v(x1, x_t, t)
+                    x_boundary = self.model(
+                        x_t,
+                        t=t,
+                        cond=cond,
+                        omega=omega,
+                        t_lo=model_lo,
+                        t_hi=model_hi,
+                        length=length,
+                    )
+                    tangent = self.method.target_to_v(x_boundary, x_t, t)
+            u, dudt, x_pred, x_spec = self.method.u_and_dudt(
+                self.model,
+                x_t,
+                t,
+                h,
+                tangent,
+                cond,
+                length,
+                omega=omega,
+                t_lo=model_lo,
+                t_hi=model_hi,
+                mode=self.dudt_mode,
+                dde_eps=self.dde_eps,
+                return_spec=complex_weight > 0.0,
+            )
+            V = u - self.method._time_like(h, u) * dudt
+            total, terms = self.method.mf_loss(
+                V,
+                v_tgt,
+                p=self.adaptive_p,
+                c=self.adaptive_c,
+            )
+            mr_stft_weight = float(loss_cfg.get("mr_stft_weight", 0.0))
+            if mr_stft_weight > 0.0:
+                gated = self._aux_gate(t, x_pred, x1)
+                if gated is not None:
+                    aux = mr_stft_loss(*gated, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)))
+                    total = total + mr_stft_weight * aux
+                    terms = {**terms, "mr_stft": aux}
+            if complex_weight > 0.0 and x_spec is not None:
+                gated = self._aux_gate(t, x_spec, x1)
+                if gated is not None:
+                    cx = complex_stft_loss(*gated, self.model.stft)
+                    total = total + complex_weight * cx
+                    terms = {**terms, "complex_stft": cx.detach()}
+        return total, terms
+
+    def sample(self, shape, cond=None, noise=None) -> torch.Tensor:
+        sampling = self.cfg.sampling
+        audio = self.method.sample(
+            self.model,
+            shape,
+            cond=cond,
+            noise=noise,
+            steps=int(sampling.get("steps", 1)),
+            method=str(sampling.get("method", "euler")),
+            guidance_scale=float(sampling.get("guidance_scale", 1.0)),
+            guidance_t_lo=sampling.get("guidance_t_lo", None),
+            guidance_t_hi=sampling.get("guidance_t_hi", None),
             lift_scale=self.lift_scale if self.rms_lift else 1.0,
         )
         peak = audio.abs().amax(dim=tuple(range(1, audio.ndim)), keepdim=True).clamp_min(1e-8)

@@ -6,9 +6,11 @@ from pathlib import Path
 import hydra
 import numpy as np
 import soundfile as sf
+import torch
 from hydra.core.global_hydra import GlobalHydra
+from omegaconf import OmegaConf
 
-from trainer import RFTrainer
+from trainer import MFTrainer, RFTrainer
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 
@@ -18,6 +20,12 @@ def _compose(overrides: list[str]):
     with hydra.initialize_config_dir(version_base=None, config_dir=str(CONFIG_DIR)):
         cfg = hydra.compose(config_name="experiment/fm_wavenext_smoke", overrides=overrides)
     return cfg
+
+
+def _compose_mf(overrides: list[str]):
+    GlobalHydra.instance().clear()
+    with hydra.initialize_config_dir(version_base=None, config_dir=str(CONFIG_DIR)):
+        return hydra.compose(config_name="experiment/mf_smoke", overrides=overrides)
 
 
 def _write_dataset(root: Path, sample_rate: int = 8000, n: int = 4, seconds: float = 0.04) -> None:
@@ -114,8 +122,6 @@ def _stft_trainer_overrides(data_root: Path, run_dir: Path) -> list[str]:
 
 
 def test_rftrainer_applies_wavefm_and_complex_aux_losses(tmp_path: Path):
-    from omegaconf import OmegaConf
-
     data_root = tmp_path / "data"
     _write_dataset(data_root, sample_rate=8000, seconds=0.3)
     GlobalHydra.instance().clear()
@@ -135,3 +141,53 @@ def test_rftrainer_applies_wavefm_and_complex_aux_losses(tmp_path: Path):
 
     assert {"wavefm", "complex_stft"} <= set(terms)
     assert math.isfinite(float(loss)) and float(loss) > 0
+
+
+def test_mftrainer_rf_anchor_uses_adaptive_weighting(tmp_path: Path):
+    data_root = tmp_path / "data"
+    _write_dataset(data_root, seconds=0.032)
+    trainer = MFTrainer(
+        _compose_mf(
+            [
+                f"data.root={data_root}",
+                f"train.run_dir={tmp_path / 'run'}",
+                "train.wandb.enabled=false",
+                "train.val_fraction=0",
+            ]
+        )
+    )
+    batch = next(iter(trainer.train_loader))
+    audio = batch["audio"].to(trainer.device)
+    cond = trainer.condition(
+        audio,
+        trainer.sample_rate,
+        batch["audio_lengths"].to(trainer.device),
+    )
+    loss, terms = trainer._rf_step(audio, cond, adaptive=True)
+    loss.backward()
+
+    assert set(terms) == {"rf_mse"}
+    assert math.isfinite(float(loss))
+
+
+def test_aux_gate_keeps_only_rows_above_t_min():
+    trainer = object.__new__(RFTrainer)
+    pred = torch.randn(4, 1, 32)
+    target = torch.randn_like(pred)
+    t = torch.tensor([0.1, 0.2, 0.7, 0.0])
+
+    # gated: only t >= aux_t_min (near data) survive — shared by every x-space aux loss
+    trainer.cfg = OmegaConf.create({"loss": {"aux_t_min": 0.2}})
+    gated = trainer._aux_gate(t, pred, target)
+    assert gated is not None
+    p, q = gated
+    assert p.shape[0] == 2 and torch.equal(p, pred[t >= 0.2]) and torch.equal(q, target[t >= 0.2])
+
+    # ungated by default (aux_t_min unset): tensors returned unchanged
+    trainer.cfg = OmegaConf.create({"loss": {}})
+    ungated = trainer._aux_gate(t, pred, target)
+    assert ungated[0] is pred and ungated[1] is target
+
+    # gate empties the batch -> None
+    trainer.cfg = OmegaConf.create({"loss": {"aux_t_min": 0.99}})
+    assert trainer._aux_gate(t, pred, target) is None

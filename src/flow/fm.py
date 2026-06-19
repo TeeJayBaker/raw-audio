@@ -30,7 +30,49 @@ class RectifiedFlow:
         return x_t, t, x1
 
     def target_to_v(self, target: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return (target - x_t) / (1.0 - self._time_like(t, x_t)).clamp_min(EPS)
+        denom = 1.0 - self._time_like(t, x_t)
+        sign = torch.where(denom < 0, -torch.ones_like(denom), torch.ones_like(denom))
+        denom = sign * denom.abs().clamp_min(EPS)
+        return (target - x_t) / denom
+
+    def v_to_target(self, v: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return x_t + (1.0 - self._time_like(t, x_t)) * v
+
+    @torch.no_grad()
+    def guided_velocity_target(
+        self,
+        model,
+        x1: torch.Tensor,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        cond: torch.Tensor | None,
+        omega: torch.Tensor,
+        length: int,
+        interval_lo,
+        interval_hi,
+        model_t_lo: torch.Tensor | None = None,
+        model_t_hi: torch.Tensor | None = None,
+        return_boundary: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        v_cond = self.target_to_v(x1, x_t, t)
+        if cond is None:
+            return v_cond
+        kwargs = {
+            "t": t,
+            "omega": omega,
+            "t_lo": model_t_lo,
+            "t_hi": model_t_hi,
+            "length": length,
+        }
+        v_c = self.target_to_v(model(x_t, cond=cond, **kwargs), x_t, t)
+        v_u = self.target_to_v(model(x_t, cond=torch.zeros_like(cond), **kwargs), x_t, t)
+        coeff = 1.0 - 1.0 / self._time_like(omega, v_cond)
+        mask = self._time_like(
+            ((t >= interval_lo) & (t <= interval_hi)).to(v_cond.dtype),
+            v_cond,
+        )
+        v_guided = v_cond + coeff * mask * (v_c - v_u)
+        return (v_guided, v_c) if return_boundary else v_guided
 
     def loss(
         self,
