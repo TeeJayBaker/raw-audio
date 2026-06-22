@@ -40,13 +40,15 @@ conditioner:
 loss:
   loss_space: v
   primary: mse
-  mr_stft_weight: 0.1
+  # All four aux losses evened to ~0.8 weighted contribution (weight = 0.8 / measured raw); each
+  # shrinks as the model trains it down, so this is the starting balance.
+  mr_stft_weight: 1.0        # raw ~0.8  -> ~0.8  (was 0.1; raised to even the bundle)
   mr_stft_log_weight: 0.0
   aux_t_min: 0.2  # pMF t<=0.8 mirrored to repo t-axis; gates all x-space aux (mr/complex/consistency/cdpam/wavefm)
   wavefm_weight: 0.0
-  complex_stft_weight: 0.0
-  consistency_weight: 0.25  # raw residual ~0.5 -> contributes ~0.12, a modest add atop mr (~0.08 here); shrinks as it trains
-  cdpam_weight: 0.1         # raw ~1.36 -> contributes ~0.14
+  complex_stft_weight: 0.2  # raw ~4.5  -> ~0.8  (was 0.0)
+  consistency_weight: 1.5    # raw ~0.5  -> ~0.8
+  cdpam_weight: 0.5          # raw ~1.36 -> ~0.8
 
 optimizer:
   _target_: optim.build_muon
