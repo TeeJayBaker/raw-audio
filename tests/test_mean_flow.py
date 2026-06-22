@@ -4,8 +4,26 @@ import torch
 
 from backbone.blocks import Attention
 from backbone.transformer import Transformer
-from flow.fm import EPS, RectifiedFlow
+from flow.fm import EPS, VELOCITY_CLIP, RectifiedFlow
 from flow.mf import MeanFlow
+
+
+class WaveformMeanFlow(MeanFlow):
+    """MeanFlow whose _predict skips the STFT bracket, so the dde/jvp/CFG math can be
+    exercised with analytic waveform-space toy models. The real STFT crossing is covered
+    by test_mean_flow_dde_jvp_agree_on_stft_transformer (uses the real MeanFlow)."""
+
+    def _predict(self, model, x, length=None, with_aux=True, **model_kwargs):
+        out = model(x, **model_kwargs)  # waveform-space toy: no STFT, no v-head
+        return out, None, out, out  # (pred, aux, audio, spec)
+
+
+class WaveformRF(RectifiedFlow):
+    """RectifiedFlow with the STFT bracket disabled (waveform-space toy models)."""
+
+    def _predict(self, model, x, length=None, with_aux=True, **model_kwargs):
+        out = model(x, **model_kwargs)
+        return out, None, out
 
 
 def _tiny_stft_transformer() -> Transformer:
@@ -57,7 +75,7 @@ def _pair(batch=4, length=8):
 
 
 def test_constant_field_satisfies_mf_identity():
-    flow = MeanFlow()
+    flow = WaveformMeanFlow()
     c, x0, x1 = _pair()
     model = ConstantVelocityModel(c)
     t = torch.tensor([0.1, 0.4, 0.6, 0.8])
@@ -84,7 +102,7 @@ def test_constant_field_satisfies_mf_identity():
 
 
 def test_dde_matches_jvp_on_curved_model():
-    flow = MeanFlow()
+    flow = WaveformMeanFlow()
     torch.manual_seed(1)
     model = CurvedModel()
     x_t = torch.randn(4, 1, 8)
@@ -117,8 +135,8 @@ def test_attention_jvp_flag_enables_forward_ad_and_resets():
 
 
 def test_mean_flow_dde_jvp_agree_on_stft_transformer():
-    # End-to-end A/B on the real backbone: jvp (MATH-backend forward-AD on CPU) must match
-    # the dde central difference, and return_spec must yield the same complex spec in both.
+    # End-to-end A/B on the real backbone: jvp (MATH-backend forward-AD on CPU) must match the dde
+    # central difference, and the returned u-head audio / channelised spec must agree in both.
     torch.manual_seed(0)
     model = _tiny_stft_transformer()
     flow = MeanFlow()
@@ -127,27 +145,31 @@ def test_mean_flow_dde_jvp_agree_on_stft_transformer():
     h = torch.tensor([0.12, 0.18])
     tangent = torch.randn_like(x_t)
     args = (model, x_t, t, h, tangent, None, 256)
-    u_d, dudt_d, xp_d, xs_d = flow.u_and_dudt(*args, mode="dde", dde_eps=1e-3, return_spec=True)
-    u_j, dudt_j, xp_j, xs_j = flow.u_and_dudt(*args, mode="jvp", return_spec=True)
+    u_d, dudt_d, audio_d, spec_d = flow.u_and_dudt(*args, mode="dde", dde_eps=1e-3)
+    u_j, dudt_j, audio_j, spec_j = flow.u_and_dudt(*args, mode="jvp")
 
-    assert torch.allclose(u_d, u_j, atol=1e-4) and torch.allclose(xp_d, xp_j, atol=1e-4)
+    assert torch.allclose(u_d, u_j, atol=1e-4) and torch.allclose(audio_d, audio_j, atol=1e-4)
     assert torch.allclose(dudt_d, dudt_j, atol=2e-2, rtol=2e-2)
-    assert xs_d is not None and xs_d.is_complex() and xs_d.shape == xs_j.shape
-    assert torch.allclose(xs_d, xs_j, atol=1e-4)
+    assert audio_d.shape == x_t.shape  # u-head waveform
+    assert not spec_d.is_complex() and spec_d.shape == spec_j.shape  # channelised STFT
+    assert spec_d.shape[1] == 2 * model.out_channels * model.stft.freq_bins
+    assert torch.allclose(spec_d, spec_j, atol=1e-4)
     assert not Attention._use_triton_jvp
 
 
-def test_target_to_v_preserves_sign_past_data_endpoint():
+def test_target_to_v_clips_denominator_at_velocity_clip():
+    # pMF floors |1-t| at VELOCITY_CLIP, bounding the velocity near (and past) the data endpoint
+    # while preserving its sign across t=1.
     flow = MeanFlow()
     x_t = torch.randn(2, 1, 8)
-    t = torch.tensor([1.001, 1.01])
-    velocity = torch.randn_like(x_t)
-    target = x_t + (1.0 - flow._time_like(t, x_t)) * velocity
-    assert torch.allclose(flow.target_to_v(target, x_t, t), velocity, atol=1e-4)
+    t = torch.tensor([0.99, 1.01])  # |1-t| = 0.01 < clip, on both sides of the endpoint
+    target = torch.randn_like(x_t)
+    denom = torch.tensor([VELOCITY_CLIP, -VELOCITY_CLIP]).view(2, 1, 1)  # floored, sign preserved
+    assert torch.allclose(flow.target_to_v(target, x_t, t), (target - x_t) / denom, atol=1e-5)
 
 
 def test_u_carries_grad_and_dudt_does_not():
-    flow = MeanFlow()
+    flow = WaveformMeanFlow()
     model = CurvedModel()
     x_t = torch.randn(2, 1, 8)
     t = torch.tensor([0.3, 0.5])
@@ -167,7 +189,7 @@ def test_u_carries_grad_and_dudt_does_not():
 
 
 def test_one_step_generate_returns_endpoint_prediction():
-    flow = MeanFlow()
+    flow = WaveformMeanFlow()
     c, _, _ = _pair()
     model = ConstantVelocityModel(c)
     noise = torch.randn(2, 1, 8)
@@ -177,7 +199,7 @@ def test_one_step_generate_returns_endpoint_prediction():
 
 
 def test_generate_runs_with_omega_and_interval():
-    flow = MeanFlow()
+    flow = WaveformMeanFlow()
     model = ConstantVelocityModel(torch.zeros(1, 1, 8))
     out = flow.sample(
         model,
@@ -191,7 +213,7 @@ def test_generate_runs_with_omega_and_interval():
 
 
 def test_guided_target_formula_fixed_interval():
-    flow = RectifiedFlow()
+    flow = WaveformRF()
     model = CondShiftModel()
     x1 = torch.randn(2, 1, 8)
     x_t, t, _ = flow.train_tuple(x1, t=torch.tensor([0.3, 0.9]))
@@ -205,33 +227,8 @@ def test_guided_target_formula_fixed_interval():
     assert torch.allclose(v_g[1], v_cond[1], atol=1e-5)
 
 
-def test_guided_target_returns_conditioned_boundary_tangent():
-    flow = RectifiedFlow()
-    model = CondShiftModel()
-    x1 = torch.randn(2, 1, 8)
-    x_t, t, _ = flow.train_tuple(x1, t=torch.tensor([0.3, 0.9]))
-    cond = torch.full((2, 4), 2.0)
-    omega = torch.tensor([3.0, 3.0])
-    v_guided, tangent = flow.guided_velocity_target(
-        model,
-        x1,
-        x_t,
-        t,
-        cond,
-        omega,
-        8,
-        0.0,
-        0.8,
-        None,
-        None,
-        return_boundary=True,
-    )
-    assert torch.allclose(tangent, torch.full_like(tangent, 3.0))
-    assert not torch.allclose(tangent, v_guided)
-
-
 def test_guided_target_conditioned_interval_per_row():
-    flow = RectifiedFlow()
+    flow = WaveformRF()
     model = CondShiftModel()
     x1 = torch.randn(2, 1, 8)
     x_t, t, _ = flow.train_tuple(x1, t=torch.tensor([0.3, 0.7]))
@@ -248,7 +245,7 @@ def test_guided_target_conditioned_interval_per_row():
 
 
 def test_guided_target_omega_one_and_unconditional_are_v_cond():
-    flow = RectifiedFlow()
+    flow = WaveformRF()
     x1 = torch.randn(2, 1, 8)
     x_t, t, _ = flow.train_tuple(x1, t=torch.rand(2))
     v_cond = flow.target_to_v(x1, x_t, t)
@@ -301,7 +298,7 @@ def test_dde_dudt_runs_fp32_under_bf16_autocast():
     # du/dt is a central difference / (2*eps); under bf16 autocast the two probe forwards cancel
     # catastrophically. u_and_dudt must force the probes to fp32 so du/dt is invariant to the
     # outer autocast — the bug that drove the MF run's 1-NFE output to noise.
-    flow = MeanFlow()
+    flow = WaveformMeanFlow()
     torch.manual_seed(0)
     model = _LinearBoundaryModel()
     x_t = torch.randn(4, 1, 8)

@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from emb.audiomae import AudioMAEEmbedding
+from emb.cdpam import CDPAMEmbedding
 from emb.clap import CLAPEmbedding
 from emb.encodec import EnCodecEmbedding
 from emb.matpac import MATPACEmbedding
@@ -21,6 +22,7 @@ from emb.vggish import VGGishEmbedding
 # representations such as EnCodec. ``forward`` = ``no_grad(embed)`` for metric/conditioner paths.
 _EMBEDDINGS: dict[str, type[nn.Module]] = {
     "audiomae": AudioMAEEmbedding,
+    "cdpam": CDPAMEmbedding,
     "clap": CLAPEmbedding,
     "encodec": EnCodecEmbedding,
     "matpac": MATPACEmbedding,

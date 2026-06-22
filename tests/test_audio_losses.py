@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from backbone.io import STFTConfig, waveform_to_stft
 from losses.audio import (
-    complex_stft_loss,
     log_magnitude_loss,
     mel_l1_loss,
     mr_stft_loss,
@@ -78,17 +76,6 @@ def test_mel_l1_loss_zero_for_identical_and_backprops():
     loss = mel_l1_loss(pred, target, sample_rate=8000, n_fft=256, hop_length=64, n_mels=20)
     loss.backward()
     assert torch.isfinite(loss) and torch.isfinite(pred.grad).all()
-
-
-def test_complex_stft_loss_zero_when_spec_matches_target():
-    cfg = STFTConfig(n_fft=256, hop_length=64, win_length=256)
-    target = _tone()
-    spec = waveform_to_stft(target, cfg).requires_grad_(True)
-    assert complex_stft_loss(spec.detach(), target, cfg) < 1e-6
-    # a mismatched spec gives a positive, differentiable loss
-    loss = complex_stft_loss(spec, target * 0.5, cfg)
-    loss.backward()
-    assert loss > 0 and torch.isfinite(spec.grad).all()
 
 
 def test_wavefm_loss_bundles_components_and_backprops():

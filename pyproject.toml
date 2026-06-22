@@ -25,6 +25,8 @@ dependencies = [
     "onnx>=1.21.0",
     "onnxruntime>=1.26.0",
     "setuptools>=82.0.1",
+    "cdpam>=0.0.6",
+    "resampy>=0.4.3",
 ]
 
 [dependency-groups]

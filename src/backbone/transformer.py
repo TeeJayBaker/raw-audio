@@ -3,17 +3,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from backbone.blocks import TransformerBlock
+from backbone.blocks import TransformerBlock, rope_tables
 from backbone.conditioning import ConditioningCombiner, ConditioningEmbedding, TimeEmbedding
-from backbone.io import (
-    STFTConfig,
-    as_waveform,
-    center_crop_or_pad,
-    channels_to_complex,
-    complex_to_channels,
-    stft_to_waveform,
-    waveform_to_stft,
-)
+from backbone.io import STFTConfig
+from backbone.patching import build_patcher
 
 
 def _zero_init_time_embed(cond_dim: int, time_scale: float) -> TimeEmbedding:
@@ -23,35 +16,25 @@ def _zero_init_time_embed(cond_dim: int, time_scale: float) -> TimeEmbedding:
     return emb
 
 
-class ConvHead(nn.Module):
-    def __init__(self, channels: int, kernel_size: int = 13):
-        super().__init__()
-        pad = kernel_size // 2
-        self.net = nn.Sequential(
-            nn.Conv1d(channels, channels, kernel_size, padding=pad),
-            nn.SiLU(),
-            nn.Conv1d(channels, channels, kernel_size, padding=pad),
-            nn.SiLU(),
-            nn.Conv1d(channels, channels, kernel_size, padding=pad),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
 class Transformer(nn.Module):
-    """Waveform-in / waveform-out transformer. With an `stft` config it operates on
-    the (real/imag channelised) spectrogram internally; otherwise it patches the raw
-    waveform. Conditioned throughout via per-block AdaLN-Zero."""
+    """Spectrogram-in / spectrogram-out transformer (no STFT inside -> scripts to C++).
+
+    Input and output are channelised STFTs ``[B, 2*C*F, frames]`` (the
+    ``complex_to_channels`` layout). A pure-reshape patcher turns the spectrogram into
+    tokens, a learned ``in_proj`` (optionally low-rank via ``bottleneck``) lifts them to
+    ``dim``, AdaLN-Zero blocks with axial RoPE process them, and ``out_proj`` + ``unpatch``
+    return the spectrogram. The waveform<->spectrogram crossing lives in
+    ``RectifiedFlow._predict``, not here. Conditioned throughout via per-block AdaLN-Zero.
+    """
 
     def __init__(
         self,
         channels: int = 1,
         out_channels: int | None = None,
         patching: dict | None = None,
+        bottleneck: int | None = None,
         block: dict | None = None,
         conditioning: dict | None = None,
-        head: dict | None = None,
         stft: dict | None = None,
         sample_rate: int = 48000,
         name: str | None = None,
@@ -63,11 +46,13 @@ class Transformer(nn.Module):
         self.name = name
         self.channels = int(channels)
         self.out_channels = int(out_channels or channels)
-        self.stft = STFTConfig.from_dict(stft) if stft is not None else None
-        self.patch_size = int((patching or {}).get("patch_size", 1))
+        self.stft = STFTConfig.from_dict(stft)
+        self.patcher = build_patcher(patching, self.stft.freq_bins)
 
         dim = int(block["dim"])
         self.dim = dim
+        self.heads = int(block.get("heads", 4))
+        self.head_dim = dim // self.heads
         self.cond_dim = int(conditioning["cond_dim"])
         self.time_embed = TimeEmbedding(self.cond_dim, time_scale=conditioning.get("time_scale", 1.0))
         time_scale = float(conditioning.get("time_scale", 1.0))
@@ -94,37 +79,40 @@ class Transformer(nn.Module):
         self.cond_embed = ConditioningEmbedding(int(conditioning.get("embed_dim", self.cond_dim)), self.cond_dim)
         self.cond_combine = ConditioningCombiner(self.cond_dim)
 
-        if self.stft is not None:
-            in_channels = 2 * self.channels * self.stft.freq_bins
-            out_channels = 2 * self.out_channels * self.stft.freq_bins
+        feat_in = self.patcher.feat(self.channels)
+        feat_out = self.patcher.feat(self.out_channels)
+        if bottleneck:  # JiT/pMF input-only low-rank waist; output stays full-rank
+            self.in_proj = nn.Sequential(
+                nn.Conv1d(feat_in, int(bottleneck), 1, bias=False),
+                nn.Conv1d(int(bottleneck), dim, 1),
+            )
         else:
-            in_channels = self.channels
-            out_channels = self.out_channels
-        self.in_proj = nn.Conv1d(in_channels, dim, self.patch_size, stride=self.patch_size)
-        self.out_proj = nn.ConvTranspose1d(dim, out_channels, self.patch_size, stride=self.patch_size)
-        self.blocks = nn.ModuleList(
-            [
-                TransformerBlock(
-                    dim,
-                    self.cond_dim,
-                    heads=block.get("heads", 4),
-                    mlp_ratio=block.get("mlp_ratio", 8 / 3),
-                    dropout=block.get("dropout", 0.0),
-                    rope=block.get("rope", True),
-                    qk_norm=block.get("qk_norm", True),
-                )
-                for _ in range(int(block.get("depth", 2)))
-            ]
-        )
+            self.in_proj = nn.Conv1d(feat_in, dim, 1)
 
-        head = head or {}
-        head_type = head.get("type", "identity")
-        if self.stft is not None or head_type == "identity":
-            self.head = nn.Identity()
-        elif head_type == "conv":
-            self.head = ConvHead(self.out_channels, kernel_size=int(head.get("kernel_size", 13)))
-        else:
-            raise ValueError(f"Unknown Transformer head type: {head_type}")
+        def make_block() -> TransformerBlock:
+            return TransformerBlock(
+                dim,
+                self.cond_dim,
+                heads=self.heads,
+                mlp_ratio=block.get("mlp_ratio", 8 / 3),
+                dropout=block.get("dropout", 0.0),
+                rope=block.get("rope", True),
+                qk_norm=block.get("qk_norm", True),
+            )
+
+        depth = int(block.get("depth", 2))
+        self.aux_depth = int(block.get("aux_depth", 0))
+        if not 0 <= self.aux_depth <= depth:
+            raise ValueError(f"block.aux_depth must be in [0, depth={depth}], got {self.aux_depth}")
+        self.trunk_depth = depth - self.aux_depth
+        # `blocks` spans the full depth: a shared trunk `[:trunk_depth]` then the u-head tail. The
+        # MeanFlow v-head (instantaneous velocity, training-only) branches off the shared-trunk
+        # activation through a parallel `v_blocks`/`v_out_proj`. aux_depth=0 leaves the module
+        # bit-identical to the single-head RF transformer (no v-head, RF checkpoints load as-is).
+        self.out_proj = nn.Conv1d(dim, feat_out, 1)
+        self.blocks = nn.ModuleList([make_block() for _ in range(depth)])
+        self.v_blocks = nn.ModuleList([make_block() for _ in range(self.aux_depth)]) if self.aux_depth else None
+        self.v_out_proj = nn.Conv1d(dim, feat_out, 1) if self.aux_depth else None
 
     def forward(
         self,
@@ -135,11 +123,8 @@ class Transformer(nn.Module):
         omega: torch.Tensor | None = None,
         t_lo: torch.Tensor | None = None,
         t_hi: torch.Tensor | None = None,
-        length: int | None = None,
-        return_spec: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
-        x = as_waveform(x)
-        target = int(length or x.shape[-1])
+        return_aux: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         t_embed = self.time_embed(t) if t is not None else None
         if h is not None and self.gap_embed is None:
             raise ValueError("Backbone got `h` but conditioning.gap_embed is false")
@@ -158,22 +143,20 @@ class Transformer(nn.Module):
         cond = self.cond_embed(cond)
         cond = self.cond_combine(t_embed, cond)
 
-        if self.stft is not None:
-            spec = waveform_to_stft(x, self.stft)
-            h_in = complex_to_channels(spec)
-        else:
-            h_in = x
-
-        h = self.in_proj(h_in).transpose(1, 2)
-        for block in self.blocks:
-            h = block(h, cond)
-        y = self.out_proj(h.transpose(1, 2))
-
-        if self.stft is not None:
-            y = center_crop_or_pad(y, h_in.shape[-1])
-            spec = channels_to_complex(y, self.out_channels, self.stft.freq_bins)
-            wav = stft_to_waveform(spec, self.stft, length=target)  # fp32
-            return (wav, spec) if return_spec else wav
-        # fp32 audio out regardless of AMP state (ConvHead/Identity stays bf16 under AMP).
-        out = center_crop_or_pad(self.head(y), target).float()
-        return (out, None) if return_spec else out
+        frames = x.shape[-1]
+        z = self.in_proj(self.patcher.patch(x)).transpose(1, 2)  # [B, N, dim]
+        npt = z.shape[1] // self.patcher.npf
+        rope = rope_tables(self.patcher.npf, npt, self.head_dim, z.device)
+        want_aux = return_aux and self.aux_depth > 0
+        z_shared = None
+        for i, block in enumerate(self.blocks):
+            if want_aux and i == self.trunk_depth:
+                z_shared = z  # shared-trunk activation feeding both heads
+            z = block(z, cond, rope)
+        u_spec = self.patcher.unpatch(self.out_proj(z.transpose(1, 2)), frames)
+        if not want_aux:
+            return u_spec
+        for block in self.v_blocks:
+            z_shared = block(z_shared, cond, rope)
+        v_spec = self.patcher.unpatch(self.v_out_proj(z_shared.transpose(1, 2)), frames)
+        return u_spec, v_spec

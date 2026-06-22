@@ -38,11 +38,11 @@ Working notes for the one-shot FM runs. Supersedes `fm_runs_failure_investigatio
   delta 0.55 vs 0.93 signal). Recon check, stft-b64 100k, s=3.5 / 25 steps, 10 clips:
   mean MATPAC cosine 0.712 -> 0.775, 9/10 improved
   (`experiments/cfg_sampling/listen/`).
-- MeanFlow uses the measured fixed guidance interval `[0.0, 0.8]`, the exact mirrored
-  iMF timestep mean `logit_mean=0.4`, and pMF-style MR-STFT gating at repo `t>=0.2`
-  (pMF `t<=0.8` on its opposite axis). The guided MF target remains stochastic, but
-  the DDE/JVP tangent uses the model's conditioned boundary velocity to retain iMF's
-  variance reduction.
+- MeanFlow uses the measured fixed guidance interval `[0.0, 0.8]`, the pMF-mirrored
+  timestep sampler `logit_mean=-0.8, logit_std=0.8` (pMF's `(0.8, 0.8)` on its reversed
+  axis), and pMF-style MR-STFT gating at repo `t>=0.2` (pMF `t<=0.8`). The guided MF
+  target stays stochastic; the DDE/JVP tangent is the **v-head's** instantaneous velocity
+  (see the 2026-06-19 v-head fix), not the u-head boundary eval.
 - MeanFlow `flow.mf.dudt=jvp` now works: the fused SDPA kernels lack forward-AD, so
   `Attention` (`src/backbone/blocks.py`) carries a class-level `set_triton_jvp` flag that
   `MeanFlow.u_and_dudt` flips around `torch.func.jvp`. On CUDA it routes to the ported
@@ -117,6 +117,63 @@ our `target_to_v` divides by `(1−t)` floored only at 1e-5 → near-unbounded n
 Next step: add an auxiliary v-head — supervise it (`loss_v`) and use its prediction as the JVP
 tangent — per pMF/iMF; the cheap variant is the EMA-tangent + FM-anchor of
 [2605.09235](../wiki/papers/2605.09235.md) Alg. 1. Reference: `/tmp/pMF/pmf.py`.
+
+## 2026-06-19 — Fix: pMF twin x-pred heads (v-head tangent + loss_v)
+
+Implemented the 2026-06-17 root-cause fix. The backbone is now twin x-pred heads off a shared
+trunk (`src/backbone/transformer.py`, `block.aux_depth`): `blocks[:depth−aux_depth]` is the shared
+trunk, the `blocks` tail is the u-head, and a parallel `v_blocks`/`v_out_proj` is the training-only
+v-head. `aux_depth=0` is the single-head RF model bit-for-bit (RF-200k + every backbone test load
+unchanged); MF runs use `aux_depth=6` of `depth=12`. `forward(return_aux=True)` returns
+`(u_spec, v_spec)`; inference/eval call with `return_aux=False`, so the v-head never runs at
+sampling time (pMF's eval zero-stub).
+
+Both heads are x-pred (converted to velocity by `target_to_v` — mandatory for raw data). The v-head
+predicts the instantaneous velocity `v_c = target_to_v(x̂_v)`; in `MFTrainer._mf_step` it is (1)
+supervised by its own FM loss `loss_v = adaptive_mse(v_c, v_tgt)` against the same guided target and
+(2) **detached** to supply the JVP/dde tangent for `du/dt` — replacing the unsupervised h=0 u-head
+boundary eval that caused the `‖h·du/dt‖` blow-up. Total `= loss_u + loss_v (+ aux)`; new logged
+term `train/rf_mse` (the v-head is a rectified-flow head; its loss is the instantaneous-velocity MSE,
+continuing the old per-step RF micro-batch's `rf_mse`). `u_and_dudt`/`mf_loss`/`generate` are unchanged — the v-head sourcing lives in
+the trainer, where the old boundary-tangent forward did.
+
+Other pMF-alignment changes:
+- **Per-row r=t** (pMF `fm_mask`): `_sample_t_h` sets `h=0` on `rf_fraction` (0.5) of rows so the
+  `h·du/dt` term vanishes → those rows are pure FM for both heads every step. Replaces the old
+  whole-microbatch RF/MF split; `rf_warmup_steps` removed (the per-row anchor subsumes it).
+- **Velocity clip** `VELOCITY_CLIP=0.05` (`src/flow/fm.py`): `target_to_v` floors `|1−t|` at 0.05
+  (sign-preserving), matching pMF's `clip(t,0.05,1)`; bounds u/v/sampling near the data end. Was 1e-5.
+- `guided_velocity_target` lost `return_boundary` (the trainer no longer sources a tangent from it).
+
+Verified: `pytest tests/test_backbone.py tests/test_mean_flow.py tests/test_trainer.py` green
+(twin-head shapes, `aux_depth=0` RF-equivalence, warm-start with only `v_blocks`/`v_out_proj`
+missing, velocity clip); `mf_smoke` CPU run completes with finite `loss`/`mf_mse`/`rf_mse` + 1-NFE
+sample. Not yet run on GPU.
+
+Next: GPU run warm-started from RF-200k (tmux). Confirm the 2026-06-17 diagnostic flips —
+`train/mf_mse` (h>0) tracks `rf_mse` instead of diverging, `‖h·du/dt‖` stays bounded (re-run the
+probe), 1-NFE eval metrics (MIND/coverage/density/cosine) move toward the RF baseline, and silent
+inputs no longer render as noise.
+
+## 2026-06-20 — Waveform/spec flow switch + `_predict` triple return
+
+`flow.space` selects where the flow variable lives: `waveform` (default, unchanged) brackets every
+model eval `stft → backbone → istft`; `spec` moves the STFT/iSTFT to the data edges (`to_flow`/
+`from_flow` on the flow object) so the flow variable IS the channelised STFT and the backbone runs
+spec→spec directly. `flow.spec_scale` matches the spectrogram std to the N(0,1) noise (the spec
+analogue of `data.wav_scale`; set it from `experiments/stft_frontends/flow_space.py`'s printed
+`alpha`). `spec_space=False, spec_scale=1.0` is the waveform path bit-for-bit. Per the front-end
+results, spec-flow mainly rescues weak front-ends and the gap vanishes on patch_512x8 — keep it as
+an experiment lever, not the default. (`flow_space_spec_vs_waveform_result` memory.)
+
+`RectifiedFlow._predict` now always returns `(audio, aux, spec)` — collapsing the old
+`return_spec`/`return_aux` branching: `audio` = u-head waveform (iSTFT always; cheap), `aux` = v-head
+flow-space prediction or `None` (`with_aux` gates the v-head forward; off in sampling / dde-jvp
+probes), `spec` = u-head channelised STFT. The loss takes its natural return (`flow_pred`: `audio`
+in waveform space, `spec` in spec space); waveform aux (`mr_stft`/`wavefm`) always read `audio`,
+`complex_stft` reads `channels_to_complex(spec / spec_scale)` — so the same aux config works in
+either flow space, and the spec scale cancels. `data.lift_scale` renamed → `data.wav_scale`. The
+fixed-noise logging examples (`example_noise`) are stored in flow shape.
 
 ## Open questions / follow-ups
 

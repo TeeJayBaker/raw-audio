@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 from backbone.factory import build_backbone
+from backbone.io import channels_to_complex
 from data.audio_dataset import (
     AudioDirectoryDataset,
     BucketBatchSampler,
@@ -24,8 +25,10 @@ from emb.factory import build_embedding, build_embedding_backend, build_embeddin
 from flow.factory import build_method as build_flow_method
 from flow.fm import EPS
 from loggers import init_wandb, save_wavs, wandb_cfg, wandb_val_metrics
-from losses.audio import complex_stft_loss, mr_stft_loss, wavefm_loss
+from losses.audio import DEFAULT_MR_STFT_RESOLUTIONS, mr_stft_loss, wavefm_loss
 from losses.dist import FrechetLoss, compute_real_moments
+from losses.perceptual import cdpam_loss
+from losses.spec import complex_stft_loss, consistency_residual
 from validation import embedding_metric_cfg, generate_examples, validate_metrics
 
 FD_MOMENTS_DIR = Path("data/fd_moments")
@@ -45,13 +48,16 @@ def build_dataloaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader | None, A
     data_cfg = _as_dict(cfg.data)
     pool_multiplier = int(data_cfg.pop("bucket_pool_multiplier", 100))
     augment_cfg = data_cfg.pop("augmentations", None)
-    for key in ("rms_lift", "rms_target", "lift_scale"):
+    for key in ("rms_lift", "rms_target", "wav_scale"):
         data_cfg.pop(key, None)  # applied at the model boundary by the trainer, not the dataset
     dataset = AudioDirectoryDataset(**data_cfg)
     val_fraction = float(cfg.train.get("val_fraction", 0.0))
     if val_fraction > 0.0 and len(dataset) > 1:
         val_size = max(1, int(round(len(dataset) * val_fraction)))
-        train_set, val_set = random_split(dataset, [len(dataset) - val_size, val_size])
+        split_gen = torch.Generator().manual_seed(int(cfg.train.get("val_seed", 0)))
+        train_set, val_set = random_split(
+            dataset, [len(dataset) - val_size, val_size], generator=split_gen
+        )
     else:
         train_set, val_set = dataset, None
     loader_cfg = _as_dict(cfg.train.dataloader)
@@ -112,12 +118,13 @@ class BaseTrainer:
         # WavFlow amplitude lift (a data property): forward in training_step, inverse passed to the sampler.
         self.rms_lift = bool(cfg.data.get("rms_lift", False))
         self.rms_target = float(cfg.data.get("rms_target", 0.33))
-        self.lift_scale = float(cfg.data.get("lift_scale", 3.0))
+        self.wav_scale = float(cfg.data.get("wav_scale", 3.0))
 
         self.logger = init_wandb(cfg, self.run_dir)
         self.train_loader, self.val_loader, self.dataset = build_dataloaders(cfg)
         self.model = build_backbone(cfg.backbone).to(self.device)
         self.conditioner = self._build_conditioner()
+        self.perceptual = self._build_perceptual()
         self.method = self.build_method()
 
         self.optimizer = instantiate(cfg.optimizer, params=self.model.parameters())
@@ -148,6 +155,15 @@ class BaseTrainer:
             conditioner_cfg["device"] = str(self.device)
         conditioner = build_embedding(conditioner_cfg, device=self.device)
         return conditioner.to(self.device).eval() if conditioner is not None else None
+
+    def _build_perceptual(self):
+        # CDPAM perceptual aux loss: only load the (frozen, ~106 MB) metric when it is enabled.
+        if float(self.cfg.loss.get("cdpam_weight", 0.0)) <= 0.0:
+            return None
+        cdpam_cfg = _as_dict(self.cfg.loss.get("cdpam", {}))
+        cdpam_cfg["type"] = "cdpam"
+        cdpam_cfg.setdefault("input_sample_rate", self.sample_rate)
+        return build_embedding(cdpam_cfg, device=self.device)
 
     def _build_scheduler(self):
         warmup = int(self.cfg.train.get("warmup_steps", 0))
@@ -183,7 +199,9 @@ class BaseTrainer:
             cond = self.condition(audio.unsqueeze(0).to(self.device), self.sample_rate, lengths)
             self.example_audio.append(audio)
             self.example_cond.append(None if cond is None else cond.detach())
-            self.example_noise.append(torch.randn((1, *audio.shape), generator=generator))
+            # Fixed init noise in the flow space (= waveform shape in waveform space, channelised STFT in spec).
+            flow_shape = self.method._flow_shape(self.model, (1, *audio.shape))
+            self.example_noise.append(torch.randn(flow_shape, generator=generator))
 
     # ---- checkpointing --------------------------------------------------------
     def save_checkpoint(self) -> None:
@@ -370,10 +388,10 @@ class RFTrainer(BaseTrainer):
     def _lift(self, audio: torch.Tensor) -> torch.Tensor:
         if not self.rms_lift:
             return audio
-        # WavFlow (§3.2) amplitude lift of the target; inverse ÷lift_scale in flow sampling.
+        # WavFlow (§3.2) amplitude lift of the target; inverse ÷wav_scale in flow sampling.
         # tanh soft-saturates rare high-crest peaks instead of flat-topping.
         rms = audio.pow(2).mean(dim=(-2, -1), keepdim=True).sqrt().clamp_min(1e-8)
-        return self.lift_scale * torch.tanh((self.rms_target / rms) * audio)
+        return self.wav_scale * torch.tanh((self.rms_target / rms) * audio)
 
     def _guidance_inputs(self, audio: torch.Tensor):
         g = self.cfg.flow.get("guidance", None)
@@ -402,6 +420,69 @@ class RFTrainer(BaseTrainer):
             return None
         return tuple(x[keep] for x in tensors)
 
+    def _aux_losses(self, total, terms, t, audio_pred, spec_pred, target_audio, wavefm: bool = False):
+        """Add the x-space aux losses against the lifted target waveform, each t-gated. ``audio_pred``
+        and ``spec_pred`` are the u-head's waveform and channelised-STFT predictions (from ``_predict``);
+        complex-STFT is descaled to physical before scoring, so the spec-flow scale cancels."""
+        loss_cfg = self.cfg.loss
+        eval_metric = not self.model.training  # validation always logs the plain spectral metrics
+        mr_log_weight = float(loss_cfg.get("mr_stft_log_weight", 0.0))
+        mr_stft_weight = float(loss_cfg.get("mr_stft_weight", 0.0))
+        if mr_stft_weight > 0.0:
+            gated = self._aux_gate(t, audio_pred, target_audio)
+            if gated is not None:
+                aux = mr_stft_loss(*gated, log_weight=mr_log_weight)
+                total = total + mr_stft_weight * aux
+                terms = {**terms, "mr_stft": aux}
+        if wavefm and float(loss_cfg.get("wavefm_weight", 0.0)) > 0.0:
+            gated = self._aux_gate(t, audio_pred, target_audio)
+            if gated is not None:
+                wf, wf_terms = wavefm_loss(*gated, sample_rate=self.model.sample_rate)
+                total = total + float(loss_cfg.get("wavefm_weight", 0.0)) * wf
+                terms = {**terms, "wavefm": wf.detach(), **wf_terms}
+        # Phase-aware terms on the raw predicted spectrogram (descaled to physical so the spec-flow
+        # scale cancels). All t-gated like every other aux loss; the reference-free consistency
+        # residual needs no target. MR-STFT, complex-STFT and consistency are also always logged
+        # (plain, ungated, full-batch) as validation metrics regardless of weight.
+        complex_weight = float(loss_cfg.get("complex_stft_weight", 0.0))
+        consistency_weight = float(loss_cfg.get("consistency_weight", 0.0))
+        if complex_weight > 0.0 or consistency_weight > 0.0 or eval_metric:
+            spec = channels_to_complex(
+                spec_pred / self.method.spec_scale, self.model.out_channels, self.model.stft.freq_bins
+            )
+            length = target_audio.shape[-1]
+            if complex_weight > 0.0:
+                gated = self._aux_gate(t, spec, target_audio)
+                if gated is not None:
+                    cx = complex_stft_loss(*gated, self.model.stft)
+                    total = total + complex_weight * cx
+                    terms = {**terms, "complex_stft": cx.detach()}
+            if consistency_weight > 0.0:
+                gated = self._aux_gate(t, spec)
+                if gated is not None:
+                    resid = consistency_residual(*gated, self.model.stft, length)
+                    total = total + consistency_weight * resid
+                    terms = {**terms, "consistency": resid.detach()}
+            if eval_metric:
+                terms = {
+                    **terms,
+                    "complex_stft": complex_stft_loss(spec, target_audio, self.model.stft).detach(),
+                    "consistency": consistency_residual(spec, self.model.stft, length).detach(),
+                }
+                res = [r for r in DEFAULT_MR_STFT_RESOLUTIONS if r["n_fft"] // 2 < length]
+                if res:  # skip resolutions whose centre-pad exceeds the clip (degenerate short audio)
+                    terms["mr_stft"] = mr_stft_loss(
+                        audio_pred, target_audio, resolutions=res, log_weight=mr_log_weight
+                    ).detach()
+        cdpam_weight = float(loss_cfg.get("cdpam_weight", 0.0))
+        if cdpam_weight > 0.0 and self.perceptual is not None:
+            gated = self._aux_gate(t, audio_pred, target_audio)
+            if gated is not None:
+                cd = cdpam_loss(self.perceptual, *gated)
+                total = total + cdpam_weight * cd
+                terms = {**terms, "cdpam": cd.detach()}
+        return total, terms
+
     def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
         return self._rf_step(audio, cond, adaptive=False)
 
@@ -412,41 +493,25 @@ class RFTrainer(BaseTrainer):
         adaptive: bool,
     ):
         loss_cfg = self.cfg.loss
-        audio = self._lift(audio)
-        x_t, t, x1 = self.method.train_tuple(audio, t=self._sample_t(audio))
+        audio = self._lift(audio)  # lifted waveform; the aux-loss target (x1 in waveform space)
         length = audio.shape[-1]
+        x_t, t, x1 = self.method.train_tuple(self.method.to_flow(audio, self.model), t=self._sample_t(audio))
         omega, lo, hi, model_lo, model_hi = self._guidance_inputs(audio)
-        complex_weight = float(loss_cfg.get("complex_stft_weight", 0.0))
         model_kwargs = {"t": t, "cond": cond, "length": length}
         if omega is not None:
             model_kwargs |= {"omega": omega, "t_lo": model_lo, "t_hi": model_hi}
         with torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.amp_enabled):
-            if complex_weight > 0.0:
-                pred, pred_spec = self.model(x_t, return_spec=True, **model_kwargs)
-            else:
-                pred = self.model(x_t, **model_kwargs)
+            pred, _, a_pred, spec_pred = self.method._predict(self.model, x_t, with_aux=False, **model_kwargs)
             target = x1
             if omega is not None and cond is not None:
                 v_g = self.method.guided_velocity_target(
-                    self.model,
-                    x1,
-                    x_t,
-                    t,
-                    cond,
-                    omega,
-                    length,
-                    lo,
-                    hi,
-                    model_lo,
-                    model_hi,
+                    self.model, x1, x_t, t, cond, omega, length, lo, hi, model_lo, model_hi
                 )
                 target = self.method.v_to_target(v_g, x_t, t)
             if adaptive:
-                pred_v = self.method.target_to_v(pred, x_t, t)
-                target_v = self.method.target_to_v(target, x_t, t)
                 total, terms = self.method.mf_loss(
-                    pred_v,
-                    target_v,
+                    self.method.target_to_v(pred, x_t, t),
+                    self.method.target_to_v(target, x_t, t),
                     p=self.adaptive_p,
                     c=self.adaptive_c,
                 )
@@ -460,30 +525,11 @@ class RFTrainer(BaseTrainer):
                     space=str(loss_cfg.get("loss_space", "v")),
                     loss_type=str(loss_cfg.get("primary", "mse")),
                 )
-            mr_stft_weight = float(loss_cfg.get("mr_stft_weight", 0.0))
-            if mr_stft_weight > 0.0:
-                gated = self._aux_gate(t, pred, x1)
-                if gated is not None:
-                    aux = mr_stft_loss(*gated, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)))
-                    total = total + mr_stft_weight * aux
-                    terms = {**terms, "mr_stft": aux}
-            wavefm_weight = float(loss_cfg.get("wavefm_weight", 0.0))
-            if wavefm_weight > 0.0:
-                gated = self._aux_gate(t, pred, x1)
-                if gated is not None:
-                    wf, wf_terms = wavefm_loss(*gated, sample_rate=self.model.sample_rate)
-                    total = total + wavefm_weight * wf
-                    terms = {**terms, "wavefm": wf.detach(), **wf_terms}
-            if complex_weight > 0.0:
-                gated = self._aux_gate(t, pred_spec, x1)
-                if gated is not None:
-                    cx = complex_stft_loss(*gated, self.model.stft)
-                    total = total + complex_weight * cx
-                    terms = {**terms, "complex_stft": cx.detach()}
+            total, terms = self._aux_losses(total, terms, t, a_pred, spec_pred, audio, wavefm=True)
         return total, terms
 
-    def sample(self, shape, cond=None, noise=None) -> torch.Tensor:
-        audio = self.method.sample(
+    def sample(self, shape, cond=None, noise=None, return_spec=False) -> torch.Tensor:
+        out = self.method.sample(
             self.model,
             shape,
             cond=cond,
@@ -491,10 +537,13 @@ class RFTrainer(BaseTrainer):
             steps=int(self.cfg.sampling.get("steps", 1)),
             method=str(self.cfg.sampling.get("method", "euler")),
             guidance_scale=float(self.cfg.sampling.get("guidance_scale", 1.0)),
-            lift_scale=self.lift_scale if self.rms_lift else 1.0,
+            wav_scale=self.wav_scale if self.rms_lift else 1.0,
+            return_spec=return_spec,
         )
+        audio, spec = out if return_spec else (out, None)
         peak = audio.abs().amax(dim=tuple(range(1, audio.ndim)), keepdim=True).clamp_min(1e-8)
-        return audio / peak
+        audio = audio / peak
+        return (audio, spec) if return_spec else audio
 
 
 class MFTrainer(RFTrainer):
@@ -504,11 +553,12 @@ class MFTrainer(RFTrainer):
         super().__init__(cfg)
         mf_cfg = _as_dict(self.cfg.flow.get("mf", {}))
         self.rf_fraction = float(mf_cfg.get("rf_fraction", 0.5))
-        self.rf_warmup_steps = int(mf_cfg.get("rf_warmup_steps", 0))
         self.dudt_mode = str(mf_cfg.get("dudt", "dde"))
         self.dde_eps = float(mf_cfg.get("dde_eps", 5e-3))
         self.adaptive_p = float(mf_cfg.get("adaptive_p", 1.0))
         self.adaptive_c = float(mf_cfg.get("adaptive_c", 1e-3))
+        if int(getattr(self.model, "aux_depth", 0)) <= 0:
+            raise ValueError("MFTrainer needs the v-head: set backbone.block.aux_depth > 0")
         if str(self.cfg.loss.get("loss_space", "v")) != "v":
             raise ValueError("MFTrainer requires loss.loss_space=v")
         if str(self.cfg.loss.get("primary", "mse")) != "mse":
@@ -518,7 +568,7 @@ class MFTrainer(RFTrainer):
         if init_from and self.step == 0:
             state = torch.load(Path(init_from).expanduser(), map_location="cpu", weights_only=False)
             missing, unexpected = self.model.load_state_dict(state["model"], strict=False)
-            aux = ("gap_embed", "omega_embed", "lo_embed", "hi_embed")
+            aux = ("gap_embed", "omega_embed", "lo_embed", "hi_embed", "v_blocks", "v_out_proj")
             if unexpected or any(not any(tag in key for tag in aux) for key in missing):
                 raise ValueError(f"init_from mismatch: missing={missing} unexpected={unexpected}")
             if self.ema is not None:
@@ -526,63 +576,56 @@ class MFTrainer(RFTrainer):
             tqdm.write(f"Warm-started from {init_from}")
 
     def _sample_t_h(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample (t, h) with pMF's per-row r=t mask: ``rf_fraction`` of rows get h=0 (the JVP
+        term h·du/dt vanishes -> pure flow-matching anchor for both heads), the rest get h>0."""
         a, b = self._sample_t(audio), self._sample_t(audio)
         t = torch.minimum(a, b)
-        h = (torch.maximum(a, b) - t).clamp_min(self.dde_eps)
+        h = torch.maximum(a, b) - t
+        r_eq_t = torch.rand_like(t) < self.rf_fraction
+        h = torch.where(r_eq_t, torch.zeros_like(h), h.clamp_min(self.dde_eps))
         return t, h
 
     def training_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
-        if self.step < self.rf_warmup_steps or torch.rand(()).item() < self.rf_fraction:
-            return self._rf_step(audio, cond, adaptive=True)
         return self._mf_step(audio, cond)
 
     def _mf_step(self, audio: torch.Tensor, cond: torch.Tensor | None):
-        loss_cfg = self.cfg.loss
-        audio = self._lift(audio)
-        t, h = self._sample_t_h(audio)
-        x_t, t, x1 = self.method.train_tuple(audio, t=t)
+        audio = self._lift(audio)  # lifted waveform; the aux-loss target
         length = audio.shape[-1]
+        t, h = self._sample_t_h(audio)
+        x_t, t, x1 = self.method.train_tuple(self.method.to_flow(audio, self.model), t=t)
         omega, lo, hi, model_lo, model_hi = self._guidance_inputs(audio)
-        complex_weight = float(loss_cfg.get("complex_stft_weight", 0.0))
+        # cache_enabled=False: the no_grad guided_velocity_target forward below runs first and would
+        # otherwise prime autocast's weight cache with detached bf16 casts, which the subsequent
+        # grad-carrying forwards then reuse -- silently zeroing every main-network gradient (only the
+        # v-head, which guided_velocity_target never runs, would train).
         with torch.amp.autocast(
             device_type=self.device.type,
             dtype=torch.bfloat16,
             enabled=self.amp_enabled,
+            cache_enabled=False,
         ):
             with torch.no_grad():
                 if omega is not None and cond is not None:
-                    v_tgt, tangent = self.method.guided_velocity_target(
-                        self.model,
-                        x1,
-                        x_t,
-                        t,
-                        cond,
-                        omega,
-                        length,
-                        lo,
-                        hi,
-                        model_lo,
-                        model_hi,
-                        return_boundary=True,
+                    v_tgt = self.method.guided_velocity_target(
+                        self.model, x1, x_t, t, cond, omega, length, lo, hi, model_lo, model_hi
                     )
                 else:
                     v_tgt = self.method.target_to_v(x1, x_t, t)
-                    x_boundary = self.model(
-                        x_t,
-                        t=t,
-                        cond=cond,
-                        omega=omega,
-                        t_lo=model_lo,
-                        t_hi=model_hi,
-                        length=length,
-                    )
-                    tangent = self.method.target_to_v(x_boundary, x_t, t)
-            u, dudt, x_pred, x_spec = self.method.u_and_dudt(
+            # The v-head predicts the instantaneous velocity: it is supervised against v_tgt
+            # (loss_v) and, detached, supplies the JVP/dde tangent for du/dt -- replacing the
+            # unsupervised h=0 boundary eval that drove the 1-NFE field to noise. u_and_dudt
+            # recomputes (and returns for the aux losses) the u-head prediction.
+            v_pred = self.method._predict(
+                self.model, x_t, with_aux=True,
+                t=t, h=h, cond=cond, omega=omega, t_lo=model_lo, t_hi=model_hi, length=length,
+            )[1]
+            v_c = self.method.target_to_v(v_pred, x_t, t)
+            u, dudt, a_pred, spec_pred = self.method.u_and_dudt(
                 self.model,
                 x_t,
                 t,
                 h,
-                tangent,
+                v_c.detach(),
                 cond,
                 length,
                 omega=omega,
@@ -590,33 +633,18 @@ class MFTrainer(RFTrainer):
                 t_hi=model_hi,
                 mode=self.dudt_mode,
                 dde_eps=self.dde_eps,
-                return_spec=complex_weight > 0.0,
             )
             V = u - self.method._time_like(h, u) * dudt
-            total, terms = self.method.mf_loss(
-                V,
-                v_tgt,
-                p=self.adaptive_p,
-                c=self.adaptive_c,
-            )
-            mr_stft_weight = float(loss_cfg.get("mr_stft_weight", 0.0))
-            if mr_stft_weight > 0.0:
-                gated = self._aux_gate(t, x_pred, x1)
-                if gated is not None:
-                    aux = mr_stft_loss(*gated, log_weight=float(loss_cfg.get("mr_stft_log_weight", 0.0)))
-                    total = total + mr_stft_weight * aux
-                    terms = {**terms, "mr_stft": aux}
-            if complex_weight > 0.0 and x_spec is not None:
-                gated = self._aux_gate(t, x_spec, x1)
-                if gated is not None:
-                    cx = complex_stft_loss(*gated, self.model.stft)
-                    total = total + complex_weight * cx
-                    terms = {**terms, "complex_stft": cx.detach()}
+            loss_u, terms = self.method.mf_loss(V, v_tgt, p=self.adaptive_p, c=self.adaptive_c)
+            loss_v, v_terms = self.method.mf_loss(v_c, v_tgt, p=self.adaptive_p, c=self.adaptive_c)
+            total = loss_u + loss_v
+            terms = {**terms, "rf_mse": v_terms["mf_mse"]}
+            total, terms = self._aux_losses(total, terms, t, a_pred, spec_pred, audio)
         return total, terms
 
-    def sample(self, shape, cond=None, noise=None) -> torch.Tensor:
+    def sample(self, shape, cond=None, noise=None, return_spec=False) -> torch.Tensor:
         sampling = self.cfg.sampling
-        audio = self.method.sample(
+        out = self.method.sample(
             self.model,
             shape,
             cond=cond,
@@ -626,10 +654,13 @@ class MFTrainer(RFTrainer):
             guidance_scale=float(sampling.get("guidance_scale", 1.0)),
             guidance_t_lo=sampling.get("guidance_t_lo", None),
             guidance_t_hi=sampling.get("guidance_t_hi", None),
-            lift_scale=self.lift_scale if self.rms_lift else 1.0,
+            wav_scale=self.wav_scale if self.rms_lift else 1.0,
+            return_spec=return_spec,
         )
+        audio, spec = out if return_spec else (out, None)
         peak = audio.abs().amax(dim=tuple(range(1, audio.ndim)), keepdim=True).clamp_min(1e-8)
-        return audio / peak
+        audio = audio / peak
+        return (audio, spec) if return_spec else audio
 
 
 class FDTrainer(RFTrainer):
@@ -721,7 +752,7 @@ class FDTrainer(RFTrainer):
                 steps=int(sampling.get("steps", 1)),
                 method=str(sampling.get("method", "euler")),
                 guidance_scale=float(sampling.get("guidance_scale", 1.0)),
-                lift_scale=self.lift_scale if self.rms_lift else 1.0,
+                wav_scale=self.wav_scale if self.rms_lift else 1.0,
             )
         fake = fake.float()
         peak = fake.abs().amax(dim=tuple(range(1, fake.ndim)), keepdim=True).clamp_min(1e-8)

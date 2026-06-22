@@ -10,5 +10,11 @@ t_distribution: logit_normal  # 'logit_normal' or 'uniform'
 logit_mean: 0.0
 logit_std: 1.0
 
+# Flow space: 'waveform' (flow variable = waveform; STFT bracketed per model eval) or 'spec' (flow
+# variable = channelised STFT; STFT/iSTFT only at the data edges). spec_scale matches the spectrogram
+# std to the N(0,1) noise (the spec analogue of data.wav_scale); ignored when space=waveform.
+space: waveform
+spec_scale: 1.0
+
 # Flexible CFG as a conditioning input. Null preserves ordinary RF training.
 guidance: null

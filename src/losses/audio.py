@@ -4,8 +4,6 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 
-from backbone.io import STFTConfig, as_waveform, waveform_to_stft
-
 DEFAULT_MR_STFT_RESOLUTIONS = [
     {"n_fft": 1024, "hop_length": 256, "win_length": 1024},
     {"n_fft": 512, "hop_length": 128, "win_length": 512},
@@ -216,26 +214,6 @@ def mel_l1_loss(
     pmel = torch.log(torch.einsum("fm,bft->bmt", fbank, pm) + eps)
     tmel = torch.log(torch.einsum("fm,bft->bmt", fbank, tm) + eps)
     return F.l1_loss(pmel, tmel)
-
-
-def complex_stft_loss(
-    pred_spec: torch.Tensor,
-    target: torch.Tensor,
-    stft: STFTConfig | dict,
-    energy_weight: bool = True,
-    eps: float = 1e-7,
-) -> torch.Tensor:
-    """Complex L1 between the backbone's raw predicted spectrogram and STFT(target) at the model's
-    resolution. Hooks the pre-iSTFT output, so it penalises the inconsistent (incoherent-phase)
-    component the internal iSTFT would otherwise project away. Flow2GAN energy-inverse weighting
-    (1/√(S+ε), clamped) keeps quiet bins from being drowned by high-energy ones."""
-    cfg = stft if isinstance(stft, STFTConfig) else STFTConfig.from_dict(stft)
-    tgt_spec = waveform_to_stft(as_waveform(target), cfg).to(pred_spec.dtype)
-    diff = pred_spec - tgt_spec
-    l1 = diff.real.abs() + diff.imag.abs()
-    if energy_weight:
-        l1 = l1 * (tgt_spec.abs().pow(2) + eps).rsqrt().clamp(0.01, 100.0)
-    return l1.mean()
 
 
 def wavefm_loss(

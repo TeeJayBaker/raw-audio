@@ -58,7 +58,7 @@ def main() -> None:
         audio_lengths=torch.tensor([shape[-1]]),
     )
     flow = RectifiedFlow()
-    lift_scale = float(cfg.data.get("lift_scale", 3.0)) if bool(cfg.data.get("rms_lift", False)) else 1.0
+    wav_scale = float(cfg.data.get("wav_scale", 3.0)) if bool(cfg.data.get("rms_lift", False)) else 1.0
     audio = flow.sample(
         model,
         shape=shape,
@@ -66,7 +66,7 @@ def main() -> None:
         steps=args.steps or int(cfg.sampling.steps),
         method=str(cfg.sampling.get("method", "euler")),
         guidance_scale=float(cfg.sampling.get("guidance_scale", 1.0)),
-        lift_scale=lift_scale,
+        wav_scale=wav_scale,
     )
     audio = audio.clamp(-1.0, 1.0)
     sf.write(args.out, audio[0].cpu().transpose(0, 1).numpy(), int(cfg.data.sample_rate))

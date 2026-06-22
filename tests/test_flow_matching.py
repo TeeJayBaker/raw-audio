@@ -6,6 +6,15 @@ import torch
 from flow.fm import RectifiedFlow
 
 
+class WaveformFlow(RectifiedFlow):
+    """RectifiedFlow whose _predict skips the STFT bracket, so the math can be exercised
+    with waveform-space toy models (the real STFT crossing is covered in test_backbone.py)."""
+
+    def _predict(self, model, x, length=None, with_aux=True, **model_kwargs):
+        out = model(x, **model_kwargs)  # waveform-space toy: no STFT, no v-head
+        return out, None, out, out  # (pred, aux, audio, spec)
+
+
 class ToyModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -69,7 +78,7 @@ def test_loss_backpropagates(space: str, loss_type: str):
 
 
 def test_sampler_uses_model_device_and_fixed_noise():
-    flow = RectifiedFlow()
+    flow = WaveformFlow()
     model = ToyModel()
     noise = torch.randn(2, 1, 8)
 
@@ -81,19 +90,19 @@ def test_sampler_uses_model_device_and_fixed_noise():
     assert not torch.allclose(noise[0], noise[1])
 
 
-def test_sampler_unlifts_output_by_lift_scale():
-    flow = RectifiedFlow()
+def test_sampler_unlifts_output_by_wav_scale():
+    flow = WaveformFlow()
     model = ToyModel()
     noise = torch.randn(2, 1, 8)
 
     baseline = flow.sample(model, shape=(2, 1, 8), noise=noise, steps=2)
-    lifted = flow.sample(model, shape=(2, 1, 8), noise=noise, steps=2, lift_scale=2.0)
+    lifted = flow.sample(model, shape=(2, 1, 8), noise=noise, steps=2, wav_scale=2.0)
 
     assert torch.allclose(lifted, baseline / 2.0)
 
 
 def test_sampler_rejects_wrong_noise_shape():
-    flow = RectifiedFlow()
+    flow = WaveformFlow()
     model = ToyModel()
 
     with pytest.raises(ValueError, match="noise shape"):
@@ -102,7 +111,7 @@ def test_sampler_rejects_wrong_noise_shape():
 
 @pytest.mark.parametrize("method", ["euler", "heun"])
 def test_sampler_methods_return_expected_shape(method: str):
-    flow = RectifiedFlow()
+    flow = WaveformFlow()
     model = ToyModel()
 
     sample = flow.sample(model, shape=(2, 1, 8), steps=2, method=method)
@@ -111,7 +120,7 @@ def test_sampler_methods_return_expected_shape(method: str):
 
 
 def test_sampler_cfg_uses_none_for_unconditional_prediction():
-    flow = RectifiedFlow()
+    flow = WaveformFlow()
     model = ToyModel()
     cond = torch.ones(2, 1)
 

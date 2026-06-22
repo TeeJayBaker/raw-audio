@@ -7,64 +7,135 @@ from pathlib import Path
 import pytest
 import torch
 from omegaconf import OmegaConf
+from torch import nn
 
-from backbone.blocks import AdaLN, ConvNeXtBlock1d, TransformerBlock
+from backbone.blocks import AdaLN, TransformerBlock
 from backbone.conditioning import ConditioningCombiner, TimeEmbedding
-from backbone.convnext import ConvNeXt, IStftHead, WaveNeXtHead
 from backbone.factory import build_backbone, load_backbone_config
 from backbone.io import (
     STFTConfig,
     channels_to_complex,
     complex_to_channels,
+    istft_channels,
+    stft_channels,
     stft_to_waveform,
     waveform_to_stft,
 )
 from backbone.transformer import Transformer
+from flow.fm import RectifiedFlow
 from scripts.model_stats import count_params, format_param_count
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIGS = ["wavenext", "vocos", "flow2gan", "stft_transformer", "waveform_transformer"]
-LENGTH = 4096
+TINY_STFT = {"n_fft": 64, "hop_length": 16, "win_length": 64}
 
 
-@pytest.mark.parametrize("name", CONFIGS)
-def test_forward_contract(name):
-    cfg = load_backbone_config(name)
-    model = build_backbone(cfg).eval()
-    x = torch.randn(2, int(cfg.channels), LENGTH)
-    cond = torch.randn(2, int(cfg.conditioning.cond_dim))
+def _tiny_transformer(patching=None, bottleneck=None, gap_embed=False, guidance_embed=False, interval_embed=False):
+    return Transformer(
+        channels=1,
+        stft=TINY_STFT,
+        patching=patching,
+        bottleneck=bottleneck,
+        block={"dim": 32, "depth": 1, "heads": 2},
+        conditioning={
+            "cond_dim": 16,
+            "embed_dim": 16,
+            "gap_embed": gap_embed,
+            "guidance_embed": guidance_embed,
+            "interval_embed": interval_embed,
+        },
+        sample_rate=8000,
+    )
+
+
+def _spec(model, batch=2, frames=11):
+    return torch.randn(batch, 2 * model.channels * model.stft.freq_bins, frames)
+
+
+# --- backbone forward contract: channelised spec in -> channelised spec out ---
+
+@pytest.mark.parametrize(
+    "patching,bottleneck",
+    [
+        ({"scheme": "column"}, None),
+        ({"scheme": "square", "patch_f": 16, "patch_t": 4}, None),  # square -> npf>1 -> axial RoPE
+        ({"scheme": "square", "patch_f": 16, "patch_t": 4}, 8),  # + input bottleneck
+    ],
+)
+def test_forward_contract(patching, bottleneck):
+    torch.manual_seed(0)
+    model = Transformer(
+        channels=1,
+        stft=TINY_STFT,
+        patching=patching,
+        bottleneck=bottleneck,
+        block={"dim": 32, "depth": 2, "heads": 2},
+        conditioning={"cond_dim": 16, "embed_dim": 16},
+        sample_rate=8000,
+    ).eval()
+    x = _spec(model, frames=19)
     with torch.inference_mode():
-        y = model(x, t=torch.rand(2), cond=cond, length=LENGTH)
-    assert y.shape == (2, int(cfg.get("out_channels", cfg.channels)), LENGTH)
+        y = model(x, t=torch.rand(2), cond=torch.randn(2, 16))
+    assert y.shape == x.shape
     assert y.dtype == torch.float32
     assert torch.isfinite(y).all()
 
 
-def test_conditioning_alone_or_timestep_alone():
-    cfg = load_backbone_config("wavenext")
+def test_stft_transformer_config_builds_and_runs():
+    cfg = load_backbone_config("stft_transformer")
     model = build_backbone(cfg).eval()
-    x = torch.randn(1, 1, LENGTH)
+    assert isinstance(model, Transformer)
+    x = torch.randn(1, 2 * 1 * model.stft.freq_bins, 5)
     with torch.inference_mode():
-        assert model(x, cond=torch.randn(1, int(cfg.conditioning.cond_dim)), length=LENGTH).shape == (1, 1, LENGTH)
-        assert model(x, t=torch.rand(1), length=LENGTH).shape == (1, 1, LENGTH)
+        y = model(x, t=torch.rand(1), cond=torch.randn(1, int(cfg.conditioning.cond_dim)))
+    assert y.shape == x.shape
 
 
-def test_multi_resolution_branches_sum():
-    cfg = load_backbone_config("flow2gan")
-    model = build_backbone(cfg)
-    assert len(model.branches) == len(cfg.branches.resolutions)
+def test_conditioning_alone_or_timestep_alone():
+    model = _tiny_transformer().eval()
+    x = _spec(model, batch=1)
+    with torch.inference_mode():
+        assert model(x, cond=torch.randn(1, 16)).shape == x.shape
+        assert model(x, t=torch.rand(1)).shape == x.shape
+
+
+def test_bottleneck_factorises_in_proj_only():
+    model = _tiny_transformer(patching={"scheme": "square", "patch_f": 16, "patch_t": 4}, bottleneck=8)
+    assert isinstance(model.in_proj, nn.Sequential)
+    waist, lift = model.in_proj
+    assert waist.bias is None and waist.out_channels == 8  # low-rank, biasless waist
+    assert lift.out_channels == model.dim
+    assert isinstance(model.out_proj, nn.Conv1d)  # output stays full-rank
+    assert model.out_proj.out_channels == model.patcher.feat(model.out_channels)
 
 
 def test_factory_accepts_path_and_dict_config():
-    path_model = build_backbone("configs/backbone/wavenext.yaml")
-    cfg_model = build_backbone(OmegaConf.load(ROOT / "configs" / "backbone" / "wavenext.yaml"))
-    assert type(path_model) is type(cfg_model)
+    path_model = build_backbone("configs/backbone/stft_transformer.yaml")
+    cfg_model = build_backbone(OmegaConf.load(ROOT / "configs" / "backbone" / "stft_transformer.yaml"))
+    assert type(path_model) is type(cfg_model) is Transformer
 
 
-def test_trunks_resolve_to_expected_classes():
-    assert isinstance(build_backbone("wavenext"), ConvNeXt)
-    assert isinstance(build_backbone("waveform_transformer"), Transformer)
+# --- flow._predict: the single waveform<->spectrogram crossing -------------
 
+def test_predict_round_trips_through_spectrogram():
+    torch.manual_seed(0)
+    flow = RectifiedFlow()
+    model = _tiny_transformer().eval()  # aux_depth=0 -> no v-head
+    x = torch.randn(2, 1, 256)
+    t = torch.tensor([0.3, 0.7])
+    cond = torch.randn(2, 16)
+    with torch.inference_mode():
+        pred, aux, wav, spec = flow._predict(model, x, t=t, cond=cond)
+    assert wav.shape == (2, 1, 256)
+    assert wav.dtype == torch.float32
+    assert aux is None  # no v-head
+    assert pred is wav  # waveform space: the flow-space prediction IS the waveform
+    # spec is the backbone's channelised (pre-iSTFT) prediction; iSTFT reproduces the waveform.
+    assert spec.shape == (2, 2 * model.out_channels * model.stft.freq_bins, spec.shape[-1])
+    recon = istft_channels(spec, model.stft, out_channels=model.out_channels, length=x.shape[-1])
+    assert torch.allclose(recon, wav, atol=1e-5)
+
+
+# --- conditioning / blocks (unchanged behaviour) ---------------------------
 
 def test_conditioning_combiner_normalises_each_path_then_sums():
     combiner = ConditioningCombiner(4)
@@ -98,18 +169,25 @@ def test_transformer_block_forward():
     assert block(torch.randn(2, 5, 8), torch.randn(2, 4)).shape == (2, 5, 8)
 
 
-def test_convnext_block_forward():
-    block = ConvNeXtBlock1d(8, cond_dim=4, kernel_size=3)
-    x = torch.randn(2, 8, 16)
-    assert block(x, torch.randn(2, 4)).shape == (2, 8, 16)
-    assert torch.allclose(block(x, torch.randn(2, 4)), x)  # zero-init AdaLN gate => identity at init
-
+# --- STFT / channel-layout helpers -----------------------------------------
 
 def test_stft_round_trip():
     cfg = STFTConfig(n_fft=64, hop_length=16, win_length=64)
     x = torch.randn(2, 1, 1024)
     recon = stft_to_waveform(waveform_to_stft(x, cfg), cfg, length=1024)
     assert recon.shape == x.shape
+    assert torch.allclose(recon[..., 64:-64], x[..., 64:-64], atol=1e-4)
+
+
+def test_stft_channels_round_trip():
+    cfg = STFTConfig(n_fft=64, hop_length=16, win_length=64)
+    x = torch.randn(2, 1, 1024)
+    channels = stft_channels(x, cfg)
+    assert channels.shape == (2, 2 * 1 * cfg.freq_bins, channels.shape[-1])
+    assert channels.dtype == torch.float32
+    recon = istft_channels(channels, cfg, out_channels=1, length=1024)
+    assert recon.shape == (2, 1, 1024)
+    assert recon.dtype == torch.float32
     assert torch.allclose(recon[..., 64:-64], x[..., 64:-64], atol=1e-4)
 
 
@@ -129,35 +207,6 @@ def test_time_embedding_time_scale_changes_scalar_embeddings():
     assert not torch.allclose(base(t), scaled(t))
 
 
-def test_wavenext_head_structure_and_raw_length():
-    cfg = load_backbone_config("wavenext")
-    head = build_backbone(cfg).branches[0].head
-    assert isinstance(head, WaveNeXtHead)
-    assert head.proj_fft.out_features == int(cfg.stft.n_fft)
-    assert head.proj_hop.in_features == int(cfg.stft.n_fft)
-    assert head.proj_hop.out_features == int(cfg.stft.hop_length)
-    assert head.proj_hop.bias is None
-
-
-@pytest.mark.parametrize("parameterisation", ["magphase", "realimag"])
-def test_istft_head_parameterisations_preserve_shape(parameterisation):
-    stft = STFTConfig(n_fft=14, hop_length=4, win_length=14)
-    head = IStftHead(8, 1, stft, parameterisation=parameterisation)
-    assert head(torch.randn(2, 8, 16), length=48).shape == (2, 1, 48)
-
-
-def test_istft_magphase_bias_interpretation():
-    stft = STFTConfig(n_fft=14, hop_length=4, win_length=14)
-    head = IStftHead(8, 1, stft, parameterisation="magphase")
-    torch.nn.init.zeros_(head.proj.weight)
-    with torch.no_grad():
-        head.proj.bias[:8].fill_(torch.log(torch.tensor(2.0)))
-        head.proj.bias[8:].fill_(torch.pi / 2)
-    spec = head.spec(torch.zeros(1, 8, 3))
-    assert torch.allclose(spec.real, torch.zeros_like(spec.real), atol=1e-5)
-    assert torch.allclose(spec.imag, torch.full_like(spec.imag, 2.0), atol=1e-5)
-
-
 def test_model_stats_helpers():
     model = torch.nn.Linear(3, 2)
     assert count_params(model) == 8
@@ -171,9 +220,9 @@ def test_benchmark_backbone():
         [
             sys.executable,
             str(ROOT / "scripts" / "benchmark_backbone.py"),
-            "configs/backbone/wavenext.yaml",
+            "configs/backbone/stft_transformer.yaml",
             "--length",
-            str(LENGTH),
+            "4096",
             "--warmup",
             "1",
             "--iters",
@@ -188,53 +237,7 @@ def test_benchmark_backbone():
     assert "xRT:" in result.stdout
 
 
-def test_transformer_return_spec_matches_waveform_and_reconstructs():
-    torch.manual_seed(0)
-    model = Transformer(
-        channels=1,
-        stft={"n_fft": 64, "hop_length": 16, "win_length": 64},
-        block={"dim": 32, "depth": 1, "heads": 2},
-        conditioning={"cond_dim": 16, "embed_dim": 16},
-        sample_rate=8000,
-    )
-    x = torch.randn(2, 1, 256)
-    t = torch.tensor([0.3, 0.7])
-    cond = torch.randn(2, 16)
-    wav = model(x, t=t, cond=cond)
-    wav2, spec = model(x, t=t, cond=cond, return_spec=True)
-    assert torch.is_complex(spec)
-    assert torch.allclose(wav, wav2, atol=1e-6)
-    # spec is the pre-iSTFT prediction; iSTFT(spec) reproduces the waveform output exactly.
-    recon = stft_to_waveform(spec, model.stft, length=x.shape[-1])
-    assert torch.allclose(recon, wav, atol=1e-5)
-
-
-def test_transformer_return_spec_is_none_without_stft():
-    model = Transformer(
-        channels=1,
-        block={"dim": 16, "depth": 1, "heads": 2},
-        conditioning={"cond_dim": 8, "embed_dim": 8},
-        sample_rate=8000,
-    )
-    wav, spec = model(torch.randn(1, 1, 128), t=torch.tensor([0.5]), cond=torch.randn(1, 8), return_spec=True)
-    assert spec is None and wav.shape == (1, 1, 128)
-
-
-def _tiny_transformer(gap_embed=False, guidance_embed=False, interval_embed=False):
-    return Transformer(
-        channels=1,
-        stft={"n_fft": 64, "hop_length": 16, "win_length": 64},
-        block={"dim": 32, "depth": 1, "heads": 2},
-        conditioning={
-            "cond_dim": 16,
-            "embed_dim": 16,
-            "gap_embed": gap_embed,
-            "guidance_embed": guidance_embed,
-            "interval_embed": interval_embed,
-        },
-        sample_rate=8000,
-    )
-
+# --- MeanFlow aux conditioning embeds (zero-init RF warm start) -------------
 
 def test_aux_embeds_zero_init_are_exact_rf_warm_start():
     torch.manual_seed(0)
@@ -247,7 +250,7 @@ def test_aux_embeds_zero_init_are_exact_rf_warm_start():
         for key in missing
     )
 
-    x = torch.randn(2, 1, 256)
+    x = _spec(rf)
     t = torch.tensor([0.3, 0.7])
     cond = torch.randn(2, 16)
     kw = {
@@ -262,7 +265,7 @@ def test_aux_embeds_zero_init_are_exact_rf_warm_start():
 
 def test_aux_inputs_without_embeds_raise():
     rf = _tiny_transformer()
-    x = torch.randn(1, 1, 256)
+    x = _spec(rf, batch=1)
     t = torch.tensor([0.5])
     cond = torch.randn(1, 16)
     with pytest.raises(ValueError, match="gap_embed"):
@@ -271,3 +274,45 @@ def test_aux_inputs_without_embeds_raise():
         rf(x, t=t, omega=torch.tensor([3.0]), cond=cond)
     with pytest.raises(ValueError, match="interval_embed"):
         rf(x, t=t, t_hi=torch.tensor([0.8]), cond=cond)
+
+
+# --- MeanFlow twin x-pred heads (aux_depth) --------------------------------
+
+def _twin(depth, aux_depth):
+    return Transformer(
+        channels=1,
+        stft=TINY_STFT,
+        block={"dim": 32, "depth": depth, "heads": 2, "aux_depth": aux_depth},
+        conditioning={"cond_dim": 16, "embed_dim": 16, "gap_embed": True, "guidance_embed": True},
+        sample_rate=8000,
+    )
+
+
+def test_aux_depth_zero_is_single_head_rf():
+    model = _tiny_transformer()  # aux_depth defaults to 0
+    assert model.aux_depth == 0 and model.v_blocks is None and model.v_out_proj is None
+    assert not any("v_blocks" in k or "v_out_proj" in k for k in model.state_dict())
+    x = _spec(model)
+    out = model(x, t=torch.rand(2), cond=torch.randn(2, 16), return_aux=True)
+    assert torch.is_tensor(out) and out.shape == x.shape  # no v-head -> single tensor even if asked
+
+
+def test_aux_depth_returns_twin_heads():
+    torch.manual_seed(0)
+    model = _twin(depth=3, aux_depth=2)
+    assert model.trunk_depth == 1 and len(model.v_blocks) == 2
+    x = _spec(model)
+    kw = {"t": torch.rand(2), "h": torch.rand(2), "cond": torch.randn(2, 16)}
+    assert torch.is_tensor(model(x, **kw))  # return_aux default False -> u-head only
+    u_spec, v_spec = model(x, return_aux=True, **kw)
+    assert u_spec.shape == x.shape and v_spec.shape == x.shape
+    assert not torch.allclose(u_spec, v_spec)
+
+
+def test_v_head_warm_start_from_rf_checkpoint():
+    # An RF checkpoint (aux_depth=0) loads into an aux_depth>0 model with only the v-head missing:
+    # `blocks`/`out_proj` keep identical names, so the shared trunk + u-head load as-is.
+    rf, mf = _twin(depth=2, aux_depth=0), _twin(depth=2, aux_depth=1)
+    missing, unexpected = mf.load_state_dict(rf.state_dict(), strict=False)
+    assert not unexpected
+    assert missing and all(("v_blocks" in k or "v_out_proj" in k) for k in missing)

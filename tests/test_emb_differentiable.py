@@ -79,3 +79,10 @@ def test_vggish_differentiable():
     from emb.vggish import VGGishEmbedding
 
     _assert_differentiable(_build_or_skip(lambda: VGGishEmbedding(device="cpu", input_sample_rate=INPUT_SR)))
+
+
+def test_cdpam_differentiable():
+    pytest.importorskip("cdpam")
+    from emb.cdpam import CDPAMEmbedding
+
+    _assert_differentiable(_build_or_skip(lambda: CDPAMEmbedding(device="cpu", input_sample_rate=INPUT_SR)))

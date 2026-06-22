@@ -26,6 +26,8 @@ metrics:
     status: available_via_embedding_validation
   embedding_cosine:
     enabled: false
+  consistency_residual:
+    enabled: false  # ‖S − STFT(iSTFT(S))‖/‖S‖ on free-running samples (phase-coherence metric)
   vendi:
     enabled: false
     status: placeholder

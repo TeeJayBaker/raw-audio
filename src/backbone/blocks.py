@@ -38,16 +38,34 @@ class AdaLN(nn.Module):
         return self.proj(F.silu(cond)).chunk(self.groups, dim=-1)
 
 
-def _rope(x: torch.Tensor) -> torch.Tensor:
-    dim = x.shape[-1]
-    if dim % 2:
-        return x
-    pos = torch.arange(x.shape[-2], device=x.device, dtype=torch.float32)
-    freq = torch.arange(0, dim, 2, device=x.device, dtype=torch.float32) / dim
-    inv = 1.0 / (10000**freq)
-    angles = pos[:, None] * inv[None, :]
-    cos = angles.cos()[None, None].to(dtype=x.dtype)
-    sin = angles.sin()[None, None].to(dtype=x.dtype)
+def _rope_angles(positions: torch.Tensor, dim: int) -> torch.Tensor:
+    """Rotation angles [n, dim//2] for token `positions` over a `dim`-wide pair grid."""
+    inv = 1.0 / (10000 ** (torch.arange(0, dim, 2, device=positions.device, dtype=torch.float32) / dim))
+    return positions.float()[:, None] * inv[None, :]
+
+
+def rope_tables(npf: int, npt: int, head_dim: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    """(cos, sin) tables [npf*npt, head_dim//2] for the freq-major token raster.
+
+    `npf == 1` rotates the full head dim by time index (bit-for-bit the original 1-D RoPE,
+    so `column` and its checkpoints are unchanged). `npf > 1` is axial 2-D RoPE: the first
+    head_dim//2 dims rotate by freq-patch index, the second half by time-patch index."""
+    idx = torch.arange(npf * npt, device=device)
+    freq_idx, time_idx = idx // npt, idx % npt
+    if npf == 1:
+        angles = _rope_angles(time_idx, head_dim)
+    else:
+        if head_dim % 4:
+            raise ValueError(f"axial RoPE needs head_dim divisible by 4, got {head_dim}")
+        half = head_dim // 2
+        angles = torch.cat([_rope_angles(freq_idx, half), _rope_angles(time_idx, half)], dim=-1)
+    return angles.cos(), angles.sin()
+
+
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Rotate [b, heads, n, head_dim] by precomputed (cos, sin) tables [n, head_dim//2]."""
+    cos = cos[None, None].to(dtype=x.dtype)
+    sin = sin[None, None].to(dtype=x.dtype)
     x1 = x[..., 0::2]
     x2 = x[..., 1::2]
     return torch.stack((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1).flatten(-2)
@@ -77,15 +95,17 @@ class Attention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=False)
         self.out = nn.Linear(dim, dim, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, rope: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
         b, n, d = x.shape
         q, k, v = self.qkv(x).reshape(b, n, 3, self.heads, self.head_dim).unbind(dim=2)
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
         if self.rope:
-            q = _rope(q)
-            k = _rope(k)
+            if rope is None:  # 1-D fallback for callers that don't supply a token grid
+                rope = rope_tables(1, n, self.head_dim, x.device)
+            q = apply_rope(q, *rope)
+            k = apply_rope(k, *rope)
         if self.qk_norm:
             q = F.normalize(q, dim=-1)
             k = F.normalize(k, dim=-1)
@@ -134,41 +154,9 @@ class TransformerBlock(nn.Module):
         self.mlp = SwiGLU(dim, int(dim * mlp_ratio), dropout=dropout)
         self.ada = AdaLN(cond_dim, dim, groups=6)
 
-    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cond: torch.Tensor, rope=None) -> torch.Tensor:
         scale1, shift1, gate1, scale2, shift2, gate2 = self.ada(cond)
         h = self.norm1(x) * (1 + scale1[:, None]) + shift1[:, None]
-        x = x + gate1[:, None] * self.attn(h)
+        x = x + gate1[:, None] * self.attn(h, rope)
         h = self.norm2(x) * (1 + scale2[:, None]) + shift2[:, None]
         return x + gate2[:, None] * self.mlp(h)
-
-
-class ConvNeXtBlock1d(nn.Module):
-    """ConvNeXt block on [B, C, T]: depthwise conv, channel LayerNorm, AdaLN-Zero
-    modulation (scale/shift + zero-init gate on the residual branch),
-    inverted-bottleneck pointwise MLP, LayerScale residual."""
-
-    def __init__(
-        self,
-        channels: int,
-        cond_dim: int,
-        kernel_size: int = 7,
-        expansion: int = 4,
-        layer_scale: float | None = 1e-6,
-    ):
-        super().__init__()
-        self.depthwise = nn.Conv1d(channels, channels, kernel_size, padding=kernel_size // 2, groups=channels)
-        self.norm = nn.LayerNorm(channels)
-        self.ada = AdaLN(cond_dim, channels, groups=3)
-        hidden = channels * expansion
-        self.pointwise = nn.Sequential(nn.Conv1d(channels, hidden, 1), nn.GELU(), nn.Conv1d(hidden, channels, 1))
-        self.layer_scale = nn.Parameter(torch.ones(1, channels, 1) * layer_scale) if layer_scale is not None else None
-
-    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        h = self.depthwise(x)
-        h = self.norm(h.transpose(1, 2)).transpose(1, 2)
-        scale, shift, gate = self.ada(cond)
-        h = h * (1 + scale[..., None]) + shift[..., None]
-        h = self.pointwise(h)
-        if self.layer_scale is not None:
-            h = h * self.layer_scale
-        return x + gate[..., None] * h

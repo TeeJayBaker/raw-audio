@@ -102,6 +102,21 @@ def channels_to_complex(x: torch.Tensor, channels: int, freq_bins: int) -> torch
         return torch.complex(real, imag)
 
 
+def stft_channels(wav: torch.Tensor, cfg: STFTConfig) -> torch.Tensor:
+    """Waveform [B, C, T] -> channelised STFT [B, 2*C*F, frames] (fp32). The single
+    waveform->spectrogram crossing for the spec-only backbone."""
+    return complex_to_channels(waveform_to_stft(wav, cfg))
+
+
+def istft_channels(
+    channels: torch.Tensor, cfg: STFTConfig, out_channels: int, length: int | None = None
+) -> torch.Tensor:
+    """Channelised STFT [B, 2*C*F, frames] -> waveform [B, C, T] (fp32). Inverse of
+    :func:`stft_channels`."""
+    spec = channels_to_complex(channels, out_channels, cfg.freq_bins)
+    return stft_to_waveform(spec, cfg, length=length)
+
+
 def center_crop_or_pad(x: torch.Tensor, length: int) -> torch.Tensor:
     diff = x.shape[-1] - length
     if diff == 0:

@@ -1,11 +1,8 @@
 # @package _global_
 #
-# From-scratch + Muon variant of mf_oneshots_mars_stft (the pMF-faithful recipe: random init, no
-# RF warm start, Muon optimiser). Tests whether the curvature / ‖J‖ growth that tanks the
-# warm-started runs is avoided when the whole (r,t) field is learned from scratch (the one real
-# recipe difference vs pMF/iMF, neither of which warm-starts). Note: this changes TWO things at
-# once vs the warm-start run (init + optimiser) — if it trains cleanly, ablate which mattered.
-# Implementation/protocol: docs/mf_implementation_spec.md.
+# Patched variant of mf_oneshots_mars_stft_scratch: same from-scratch + Muon pMF-faithful recipe,
+# but with a wider input bottleneck (64 vs 16) and a longer 200k schedule. See the scratch config
+# header for the init/optimiser rationale. Implementation/protocol: docs/mf_implementation_spec.md.
 
 defaults:
   - /train/default@train
@@ -19,18 +16,18 @@ trainer:
   _target_: trainer.MFTrainer
 
 backbone:
+  block:
+    aux_depth: 6  # depth 12 -> 6 shared-trunk blocks + 6-block u-head + 6-block v-head
+  patching:  # winner front-end: 2 freq bands x time-patch 8 (experiments/stft_frontends/RESULTS.md)
+    scheme: column
+    patch_f: null
+    patch_t: null
+  bottleneck: 64  # JiT/pMF input-only low-rank waist
   conditioning:
     time_scale: ${flow.t_encoding.scale}
     gap_embed: true
     guidance_embed: true
     interval_embed: false
-
-flow:
-  mf:
-    # From random init the boundary (and thus the model-sourced du/dt tangent) is untrained, so seed
-    # it with a pure-RF phase before the MF branch engages. References use 0 (50% FM every step via
-    # rf_fraction handles it); 10k is a conservative hedge — lower/raise as needed.
-    rf_warmup_steps: 0
 
 conditioner:
   type: matpac
@@ -43,11 +40,13 @@ conditioner:
 loss:
   loss_space: v
   primary: mse
-  mr_stft_weight: 1.0
+  mr_stft_weight: 0.1
   mr_stft_log_weight: 0.0
-  aux_t_min: 0.2  # pMF t<=0.8 mirrored to repo t-axis; gates all x-space aux (mr/complex/wavefm)
+  aux_t_min: 0.2  # pMF t<=0.8 mirrored to repo t-axis; gates all x-space aux (mr/complex/consistency/cdpam/wavefm)
   wavefm_weight: 0.0
-  complex_stft_weight: 0.005
+  complex_stft_weight: 0.0
+  consistency_weight: 0.25  # raw residual ~0.5 -> contributes ~0.12, a modest add atop mr (~0.08 here); shrinks as it trains
+  cdpam_weight: 0.1         # raw ~1.36 -> contributes ~0.14
 
 optimizer:
   _target_: optim.build_muon
@@ -63,14 +62,14 @@ data:
   root: /media/storage/samples/samples_from_mars/one_shots
 
 train:
-  run_dir: runs/mf-oneshots-mars-stft-scratch
+  run_dir: runs/mf-column
   device: cuda
   init_from: null   # from scratch — no RF warm start
-  max_steps: 150000
+  max_steps: 200000
   amp: true
   ema_decay: 0.999
   grad_clip: 1.0
-  grad_accum_steps: 4
+  grad_accum_steps: 8
   warmup_steps: 2000
   min_lr_ratio: 0.0
   resume: null
@@ -82,7 +81,7 @@ train:
   ckpt_every: 25000
   val_batches: 24
   dataloader:
-    batch_size: 64
+    batch_size: 32
     num_workers: 8
     pin_memory: true
     drop_last: true
@@ -106,6 +105,6 @@ sampling:
   batch_size: 1
   steps: 1
   method: euler
-  guidance_scale: 1.0
+  guidance_scale: 2.0
   guidance_t_lo: null
   guidance_t_hi: null

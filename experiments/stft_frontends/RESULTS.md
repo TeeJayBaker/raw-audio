@@ -1,8 +1,8 @@
 # STFT Front-End & Auxiliary-Loss Overfit Ablations — Consolidated Results
 
 All numbers are from the overfit probes in `experiments/stft_frontends/` and
-`experiments/aux_losses/`. Six runs, one shared trunk; only the spectrogram→token
-front-end (or the training loss) changes.
+`experiments/aux_losses/`. One shared trunk throughout; across runs only the spectrogram→token
+front-end, the training loss, or — in Run 8 — the *flow domain* (waveform vs spectrogram) changes.
 
 ## Setup
 
@@ -160,6 +160,118 @@ this explains `patch_strip` (its win was its bands, not coarse time).*
 
 ---
 
+## Run 7 — Nyquist handling + 2D RoPE on `patch_512x8` `followup5.py` / `followup6.py`
+
+`patch_512x8` pads 1025→1536 = 3 freq bands, but the 3rd is a near-empty **Nyquist-remainder
+token** (2 real bands + bin 1024 + zeros). Four ways to handle it / encode position:
+
+| variant | tok | logSTFT-L1 | tf .3/.5/.8 | own | retr | genRMS |
+|---|---|---|---|---|---|---|
+| **512x8 dropNyq** (drop bin 1024→0, 2 clean bands) | **10** | **2.384** | .99/.99/.99 | **0.728** | **50** | 0.276 |
+| 512x8 rope2d (axial 2D RoPE, same tokens) | 15 | 2.390 | .99/.99/.99 | 0.723 | 48 | 0.271 |
+| 512x8 packNyq (fold Nyquist→DC-imag, lossless) | 10 | 2.392 | .99/.99/.99 | 0.718 | 46 | 0.280 |
+| 512x8 anchor (pad, 3-band, 1D-raster RoPE) | 15 | 2.413 | .99/.99/.99 | 0.721 | 46 | 0.275 |
+
+- **Nyquist: drop it.** `dropNyq` ≥ `packNyq` on every metric (retr 50 vs 46) — keeping the
+  inaudible 24 kHz bin via the DC-imag fold buys nothing and the fold's low-band impurity
+  slightly hurts. Both 10-tok options beat the 15-tok pad anchor, so the remainder token was
+  pure waste. **Crop to 1024 bins (2 clean bands), reconstruct Nyquist as 0** → 15→10 tok *and*
+  quality ↑. No aliasing/artifacts.
+- **2D RoPE** (`rope2d`, identical init to anchor) is a small free win at the same 15 tok
+  (2.413→2.390, retr 46→48): the patches were mildly handicapped by 1D-raster RoPE. Adopt axial
+  RoPE for a production patch front-end.
+
+---
+
+## Run 8 — Waveform-space vs spectrogram-space FLOW `flow_space.py`
+
+Every run above flows in **waveform** space (= production): noise + linear interpolant + v-MSE in
+waveform, with STFT/iSTFT bracketing each model eval (`RectifiedFlow._predict`). This run holds the
+trunk fixed and moves *where the flow lives*, on two front-ends (`column`, `patch_512x8+bn16`), via
+three arms that factor the flow into **noise domain × loss domain**:
+
+- **waveform** [A] — noise + interpolant + v-MSE all in waveform (= production).
+- **wav→spec** [B] — noise + interpolant in *waveform*, but v-MSE on the model's **raw spectrogram
+  output** (no terminal iSTFT in the loss path). Isolates the *loss* domain.
+- **spec** [D] — noise + interpolant + v-MSE in the channelised STFT; one terminal iSTFT to score.
+  Scaled by a single global scalar (α=0.051) so its std matches the waveform data std (~0.28),
+  noise N(0,1), divided back out before the iSTFT. **Global (not per-bin)** scaling preserves the
+  natural spectral tilt, so spec-flow sees the same falling-spectrum-vs-flat-noise SNR profile.
+
+`A→B` = loss domain; `B→D` = noise domain. All arms share data, optimiser, the (idx,t) sequence,
+sampling-noise seeds, and one 25-step Euler sampler. Fitting is saturated everywhere (tf ≈ .98–.99)
+⇒ **entirely sampling-side**.
+
+| front-end | arm | tok | logSTFT-L1 | own | retr | genRMS |
+|---|---|---|---|---|---|---|
+| **column** | waveform [A] | 38 | 2.804 | 0.626 | 35 | 0.231 |
+| **column** | wav→spec [B] | 38 | 2.396 | 0.748 | 42 | 0.242 |
+| **column** | **spec [D]** | 38 | **2.329** | **0.800** | **51** | 0.272 |
+| | *— `column` waveform ref* | | *2.847* | *0.626* | *32* | *0.248* |
+| **patch_512x8+bn16** | waveform [A] | 15 | 2.436 | 0.712 | 48 | 0.273 |
+| **patch_512x8+bn16** | wav→spec [B] | 15 | **2.301** | 0.721 | 47 | 0.277 |
+| **patch_512x8+bn16** | spec [D] | 15 | 2.313 | 0.716 | 46 | 0.273 |
+| | *— `patch` waveform ref* | | *2.321* | *0.734* | *50* | *0.276* |
+
+**Fairness check passes:** both fresh waveform arms reproduce their established controls (column own
+0.626 identical, L1 2.804 vs 2.847; patch ≈2.32–2.44 vs 2.321 ref — within the RNG-scheme delta from
+the dedicated idx/t generator + inline sampler).
+
+> **Rank metrics on conditional adherence (own/retr), not logSTFT-L1.** Following the conditioning
+> is the project goal, and the L1/own picture diverge sharply here. On L1 the configs look "tied"
+> (2.31–2.44); on **own/retr** they do not — **`column`-spec (own 0.800 / retr 51) is the best
+> config in the entire series**, beating every `patch` variant (best patch own 0.734). The
+> front-end ranking *flips with the flow domain*: waveform-flow patch (0.712) ≫ column (0.626), but
+> **spec-flow column (0.800) ≫ patch (0.716)**. So spec-flow is *not* "redundant" — it's the route
+> to the best conditioning, via `column`.
+
+**The spec-flow win is contingent on a WEAK front-end, and the two domains do different jobs:**
+
+- **`column` (weak): both domains help, and they do different things.** Loss domain (A→B) is the big
+  lever for *spectral + semantic* fidelity — L1 −0.41, own +0.12, retr +7. Noise domain (B→D)
+  independently fixes *energy + retrieval* — genRMS 0.242→0.272 (the collapse fix is almost all
+  here), retr +9, own +0.05. The raw-spectrogram **loss** does the spectral work; spec-space
+  **noise** restores energy.
+- **`patch_512x8+bn16` (strong): neither domain moves L1**, and on own/retr the patch never reaches
+  column-spec (0.71–0.72 vs 0.800). Its freq-local token geometry already fixes the waveform-flow
+  weaknesses, so spec-flow adds nothing *on patch* — but it also doesn't *match* what spec-flow buys
+  on column.
+- **⇒ spec-flow (loss *and* noise) SUBSTITUTES for the weaknesses of a poor representation.** The
+  "overcomplete terminal-iSTFT-projection cleanup" mechanism is unsupported as the driver — the
+  loss-domain arm (no terminal projection) already captures most of the column win.
+
+### Bottleneck × flow on `column` (does the JiT bottleneck stack with spec-flow?)
+
+The JiT input bottleneck (2050→n→512, output full) was column's biggest lever in *waveform* flow
+(view A). Does it stack on top of column-spec's best-in-series 0.800? **No — it is antagonistic
+with spec-flow.** (waveform + spec arms, bn ∈ {none,4,8,16}.)
+
+| column bn | waveform L1 / own / retr / gRMS | spec L1 / own / retr / gRMS |
+|---|---|---|
+| **none** | 2.804 / 0.626 / 35 / 0.231 | **2.329 / 0.800 / 51 / 0.272** |
+| 4 | 2.910 / 0.666 / 45 / 0.289 | 2.621 / 0.710 / 50 / 0.279 |
+| 8 | 2.897 / 0.667 / 45 / 0.286 | 2.628 / 0.709 / 47 / 0.277 |
+| 16 | 2.914 / 0.653 / 41 / 0.279 | 2.638 / 0.711 / 49 / 0.282 |
+
+- **Spec-column: the bottleneck only hurts** — own 0.800→~0.71, L1 2.33→~2.63, monotone across
+  bn4/8/16. Spec-flow's whole advantage is the *full-rank read of the spectrogram* it flows in; a
+  rank-n input waist throws exactly that away. **Best column-spec = no bottleneck.**
+- **Waveform-column: the bottleneck is a *crutch*** — it lifts own/retr (0.626→~0.66, 35→45) and
+  restores energy (genRMS 0.231→0.286, to target), i.e. it does the *same* job spec-flow does, less
+  well. So bottleneck, spec-loss, and spec-noise are **all substitutes** for weak-representation
+  weaknesses; you want exactly one fix, and column-spec-no-bn is the best of them.
+- *Caveat:* my fresh waveform-column-bn **L1** rises vs no-bn (2.80→2.91), which disagrees with view
+  A's L1 *drop* (2.847→2.61) — own/retr do improve as view A says, so it's likely a bn-path harness
+  delta affecting L1 specifically; it does not touch the (large, monotone) spec-column conclusion.
+- **Transfer caveat (important at scale):** the bottleneck is an *input-information restriction* that
+  only pays off as a crutch for a poorly-conditioned setup. At n=64 the MATPAC cond is a near-unique
+  lookup key, so the model barely needs to *read* x_t and a rank-4 waist suffices; at 120k+ the cond
+  specifies a *distribution* and x_t must carry the realisation-selecting information, so a tiny rank
+  will likely starve it. Do **not** bake a small `n` — re-tune at scale (expect the sweet spot to
+  grow or vanish), and note the best result here (column-spec) wants *no* bottleneck anyway.
+
+---
+
 # Consolidated views
 
 ## A. Bottleneck on the column front-end (logSTFT-L1 ↓ vs rank n)
@@ -257,14 +369,44 @@ patches, the bottleneck stacks only on `512×8`.
    not for moderate-dim patches.
 6. **Aux losses help (sampling-side):** MR-STFT best (keep at 1.0), complex-STFT close 2nd
    (watch energy), WaveFM inconclusive (phase-confounded calibration). Orthogonal to the front-end.
+7. **Nyquist: drop it** (crop 1025→1024, reconstruct bin 1024 as 0). Beats both the dead-token pad
+   (15 tok) and the lossless DC-imag pack — keeping 24 kHz buys nothing. → 15→10 tok + quality ↑.
+8. **2D (axial) RoPE > 1D-raster RoPE** for patches (small free win); the patch numbers above were
+   measured with the weaker 1D-raster RoPE, so they slightly *understate* the patched front-ends.
+9. **Spectrogram-space flow gives the best conditional adherence in the series — via `column`**
+   (Run 8). Judged on own/retr (the project metric), **column-spec (own 0.800 / retr 51) beats every
+   config**, incl. all `patch` variants (best 0.734); the front-end ranking *flips with the flow
+   domain* (waveform: patch≫column; spec: column≫patch). The 3-arm decomposition (noise × loss
+   domain) shows on the weak `column` the **loss domain** drives spectral/semantic and the **noise
+   domain** restores energy/retrieval; on strong `patch` neither moves L1 and neither reaches
+   column-spec. So spec-flow, freq-local token geometry, and the JiT bottleneck are all
+   **substitutes** for a weak representation's faults — use exactly one. The bottleneck is
+   *antagonistic* with spec-flow (column-spec own 0.800→0.71 with any bn) and is an overfit crutch
+   (helps weak waveform-column, redundant at best otherwise). **Big caveat:** own/retr at n=64 partly
+   measures memorisation of a near-unique cond→clip lookup — validate the column-spec edge on
+   held-out clips before trusting it at scale.
 
 ## Recommended front-end + next step
 
-**`patch_512x8` (2 real bands × time-patch 8, 15 tokens) + input bottleneck n≈8–16 on its
-projection** → logSTFT-L1 ≈ 2.32, own ≈ 0.73, retr 50 — the best quality **and** the cheapest
-(15 tok vs column 38; matches `band2`'s spectral score at 1/5 the tokens and beats its
-own-cosine). Then **stack with MR-STFT loss** (orthogonal axis) on a real run. Cleanup worth
-doing: drop the wasted near-empty Nyquist-remainder band token (`patch_512` is really 2 bands).
+**Drop-Nyquist 2-band `patch_512x8` (1024 bins, 10 tokens) + axial 2D RoPE + input bottleneck
+n≈8–16**, then **stack MR-STFT loss** (orthogonal axis). Each ingredient helps independently:
+dropNyq alone is 2.384 @ 10 tok, 2D-RoPE −0.02 at no token cost, bn16 (on pad) 2.321, MR-STFT
+own +0.10 on column. The combined config is the one to try on a real run — best quality at the
+lowest token/RTF cost of anything tested (10 tok vs column's 38, vs `band2`'s 76).
+
+**Spec-flow is a real second candidate, judged on conditional adherence (Run 8).** Two configs to
+take forward, on different axes:
+1. **`patch_512x8` (+dropNyq/2D-RoPE/bn/MR-STFT), waveform-space flow** — cheapest (10–15 tok), and
+   its wins are *architectural* (freq-locality, MR-STFT) so most likely to transfer.
+2. **`column`, spectrogram-space flow, NO bottleneck** — best conditioning in the whole series
+   (own 0.800 / retr 51), but costs 38 tok and its win does *not* stack with patch nor with the
+   bottleneck (both substitute for the same weakness). The bottleneck actively *hurts* it.
+
+The catch: spec-flow's edge is on own/retr, which at n=64 partly measures memorisation of a near-
+unique cond→clip lookup, not generalisation. Before betting on column-spec at scale, confirm the
+own/retr advantage **survives on held-out clips** (and that the no-bottleneck full-rank read still
+pays when the cond stops being a lookup). Don't bake a small bottleneck `n` either — it's an
+overfit-regime crutch (see Bottleneck × flow above).
 
 > Terminology: the **"original single-timestep / full-frequency" front-end is `column`** — one
 > token per single STFT hop, covering the full 1025-bin frequency range (no time- or freq-patching).

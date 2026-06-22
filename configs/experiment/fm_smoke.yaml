@@ -1,15 +1,18 @@
 # @package _global_
+#
+# CPU RF smoke run on the (tiny) stft_transformer. Used by tests/test_trainer.py and
+# tests/test_fd_trainer.py as the pretrain config; keep max_steps=2 / ckpt_every=1.
 
 defaults:
   - /train/default@train
   - /data/audio_directory@data
-  - /flow/mf@flow
+  - /flow/fm@flow
   - /backbone/stft_transformer@backbone
   - /eval/preliminary@eval
   - _self_
 
 trainer:
-  _target_: trainer.MFTrainer
+  _target_: trainer.RFTrainer
 
 conditioner:
   type: "null"
@@ -23,15 +26,11 @@ backbone:
     win_length: 64
   block:
     dim: 32
-    depth: 2
+    depth: 1
     heads: 2
-    aux_depth: 1  # 1 shared-trunk block + u-head tail + v-head
   conditioning:
     cond_dim: 16
     embed_dim: 16
-    gap_embed: true
-    guidance_embed: true
-    interval_embed: false
     time_scale: ${flow.t_encoding.scale}
 
 loss:
@@ -55,24 +54,24 @@ data:
     enabled: false
 
 train:
-  run_dir: runs/mf-smoke
+  run_dir: runs/fm-smoke
   device: cpu
-  max_steps: 4
+  max_steps: 2
   amp: false
   ema_decay: 0.9
   warmup_steps: 0
+  resume: null
   val_fraction: 0.5
   log_every: 1
-  val_every: 2
-  sample_every: 2
-  ckpt_every: 2
+  val_every: 1
+  sample_every: 1
+  ckpt_every: 1
   dataloader:
-    batch_size: 2
+    batch_size: 1
     num_workers: 0
     pin_memory: false
     drop_last: false
 
 sampling:
   batch_size: 1
-  steps: 1
-  guidance_scale: 1.0
+  steps: 2

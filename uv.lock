@@ -81,6 +81,15 @@ wheels = [
 ]
 
 [[package]]
+name = "cdpam"
+version = "0.0.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/59/76/d4be81f695c7269e05a46c046f9af0c8eba920add735f1c50f9843545a29/cdpam-0.0.6.tar.gz", hash = "sha256:d1e8d9ba0cf49ecb226b8263e13cbabba9574997f9eefe0dce9683e57a7fe734", size = 98327546, upload-time = "2021-09-03T13:14:21.628Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/94/a1bb744131083b36f778864bb05338e6e4153e6cde5acf9a6767e50160f6/cdpam-0.0.6-py3-none-any.whl", hash = "sha256:abd860166a55ada94cb653997deed481b518e3a593e9b417a969f99522009eba", size = 98326874, upload-time = "2021-09-03T13:14:15.012Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.4.22"
 source = { registry = "https://pypi.org/simple" }
@@ -1124,6 +1133,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "arxiv" },
+    { name = "cdpam" },
     { name = "einops" },
     { name = "hydra-core" },
     { name = "laion-clap" },
@@ -1133,6 +1143,7 @@ dependencies = [
     { name = "onnx" },
     { name = "onnxruntime" },
     { name = "panns-inference" },
+    { name = "resampy" },
     { name = "scipy" },
     { name = "setuptools" },
     { name = "soundfile" },
@@ -1155,6 +1166,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "arxiv" },
+    { name = "cdpam", specifier = ">=0.0.6" },
     { name = "einops" },
     { name = "hydra-core" },
     { name = "laion-clap" },
@@ -1164,6 +1176,7 @@ requires-dist = [
     { name = "onnx", specifier = ">=1.21.0" },
     { name = "onnxruntime", specifier = ">=1.26.0" },
     { name = "panns-inference", specifier = ">=0.1.1" },
+    { name = "resampy", specifier = ">=0.4.3" },
     { name = "scipy" },
     { name = "setuptools", specifier = ">=82.0.1" },
     { name = "soundfile" },
@@ -1220,6 +1233,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5f/a4/98b9c7c6428a668bf7e42ebb7c79d576a1c3c1e3ae2d47e674b468388871/requests-2.33.1.tar.gz", hash = "sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517", size = 134120, upload-time = "2026-03-30T16:09:15.531Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/8e/7540e8a2036f79a125c1d2ebadf69ed7901608859186c856fa0388ef4197/requests-2.33.1-py3-none-any.whl", hash = "sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a", size = 64947, upload-time = "2026-03-30T16:09:13.83Z" },
+]
+
+[[package]]
+name = "resampy"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numba" },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/29/f1/34be702a69a5d272e844c98cee82351f880985cfbca0cc86378011078497/resampy-0.4.3.tar.gz", hash = "sha256:a0d1c28398f0e55994b739650afef4e3974115edbe96cd4bb81968425e916e47", size = 3080604, upload-time = "2024-03-05T20:36:08.119Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/b9/3b00ac340a1aab3389ebcc52c779914a44aadf7b0cb7a3bf053195735607/resampy-0.4.3-py3-none-any.whl", hash = "sha256:ad2ed64516b140a122d96704e32bc0f92b23f45419e8b8f478e5a05f83edcebd", size = 3076529, upload-time = "2024-03-05T20:36:02.439Z" },
 ]
 
 [[package]]

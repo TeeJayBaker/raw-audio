@@ -72,7 +72,7 @@ def _step(model, conditioner, optimizer, cfg, batch_size: int, num_samples: int,
     optimizer.zero_grad(set_to_none=True)
     amp_enabled = bool(cfg.train.get("amp", True)) and device.type == "cuda"
     with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
-        pred = model(x_t, t=t, cond=cond, length=audio.shape[-1])
+        pred = method._predict(model, x_t, t=t, cond=cond, length=audio.shape[-1], with_aux=False)[0]
         loss_cfg = cfg.loss
         total, _ = method.loss(
             pred,
@@ -133,7 +133,7 @@ def probe(config_name: str, start: int, ceiling: int, overrides: list[str] | Non
     return result
 
 
-BACKBONES = ["wavenext", "vocos", "flow2gan", "stft_transformer", "waveform_transformer"]
+BACKBONES = ["stft_transformer"]
 
 
 def _swap_backbone(cfg, backbone_name: str):

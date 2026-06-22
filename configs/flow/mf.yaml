@@ -4,11 +4,14 @@ t_encoding:
   scale: 100.0
 eps: 1e-5
 t_distribution: logit_normal
-logit_mean: 0.4  # iMF -0.4 mirrored to repo t-axis (0=noise, 1=data)
-logit_std: 1.0
+logit_mean: -0.8  # pMF (0.8, 0.8) mirrored to repo t-axis (0=noise, 1=data): bias toward noise end
+logit_std: 0.8
+# Flow space: 'waveform' (default) or 'spec' (flow variable = channelised STFT). spec_scale matches
+# the spectrogram std to the N(0,1) noise (the spec analogue of data.wav_scale).
+space: waveform
+spec_scale: 1.0
 mf:
-  rf_fraction: 0.5
-  rf_warmup_steps: 0
+  rf_fraction: 0.5  # fraction of per-row r=t (h=0) rows: pure flow-matching anchor for both heads
   dudt: dde
   dde_eps: 0.005
   adaptive_p: 1.0

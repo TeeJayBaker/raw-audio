@@ -43,7 +43,8 @@ from stft_frontends.probe import (  # noqa: E402  (reuse harness, src/ untouched
     logstft_l1,
 )
 
-from losses.audio import complex_stft_loss, mr_stft_loss, wavefm_loss  # noqa: E402
+from losses.audio import mr_stft_loss, wavefm_loss  # noqa: E402
+from losses.spec import complex_stft_loss  # noqa: E402
 from flow.fm import EPS, RectifiedFlow  # noqa: E402
 
 CALIB_LO, CALIB_HI = 500, 540  # steps over which to measure aux magnitudes on the baseline run

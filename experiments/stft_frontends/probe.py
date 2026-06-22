@@ -35,7 +35,7 @@ from torch import nn
 
 sys.path.insert(0, ".")
 sys.path.insert(0, "src")
-from backbone.blocks import TransformerBlock  # noqa: E402
+from backbone.blocks import AdaLN, RMSNorm, SwiGLU, TransformerBlock  # noqa: E402
 from backbone.conditioning import (  # noqa: E402
     ConditioningCombiner,
     ConditioningEmbedding,
@@ -81,6 +81,68 @@ def _no_amp_complex(real, imag):
         return torch.complex(real.float(), imag.float())
 
 
+def _rope_at(x, pos):
+    """RoPE on x [b, heads, n, d] using explicit per-token positions pos [n]."""
+    d = x.shape[-1]
+    if d % 2:
+        return x
+    freq = torch.arange(0, d, 2, device=x.device, dtype=torch.float32) / d
+    inv = 1.0 / (10000**freq)
+    ang = pos.float()[:, None] * inv[None, :]
+    cos = ang.cos()[None, None].to(x.dtype)
+    sin = ang.sin()[None, None].to(x.dtype)
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    return torch.stack((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1).flatten(-2)
+
+
+def _axial_rope(x, pos_f, pos_t):
+    """Axial 2D RoPE: rotate one half of the head dim by freq index, the other by time index."""
+    h = x.shape[-1] // 2
+    return torch.cat([_rope_at(x[..., :h], pos_f), _rope_at(x[..., h:], pos_t)], dim=-1)
+
+
+class Attn2D(nn.Module):
+    """Attention with axial 2D RoPE. Mirrors backbone.blocks.Attention param-for-param
+    (qkv then out, no bias) so its init is identical under the same seed."""
+
+    def __init__(self, dim, heads=8, qk_norm=True):
+        super().__init__()
+        self.heads, self.hd, self.qk_norm = heads, dim // heads, qk_norm
+        self.qkv = nn.Linear(dim, dim * 3, bias=False)
+        self.out = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, x, pos_f, pos_t):
+        b, n, d = x.shape
+        q, k, v = self.qkv(x).reshape(b, n, 3, self.heads, self.hd).unbind(dim=2)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        q, k = _axial_rope(q, pos_f, pos_t), _axial_rope(k, pos_f, pos_t)
+        if self.qk_norm:
+            q = torch.nn.functional.normalize(q, dim=-1)
+            k = torch.nn.functional.normalize(k, dim=-1)
+        y = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        return self.out(y.transpose(1, 2).reshape(b, n, d))
+
+
+class Block2D(nn.Module):
+    """TransformerBlock variant using axial 2D RoPE; same submodule order/shapes as
+    backbone.blocks.TransformerBlock, so seeded init matches the 1D-RoPE baseline exactly."""
+
+    def __init__(self, dim, cond_dim, heads=8, mlp_ratio=8 / 3):
+        super().__init__()
+        self.norm1 = RMSNorm(dim)
+        self.attn = Attn2D(dim, heads=heads)
+        self.norm2 = RMSNorm(dim)
+        self.mlp = SwiGLU(dim, int(dim * mlp_ratio))
+        self.ada = AdaLN(cond_dim, dim, groups=6)
+
+    def forward(self, x, cond, pos_f, pos_t):
+        s1, sh1, g1, s2, sh2, g2 = self.ada(cond)
+        h = self.norm1(x) * (1 + s1[:, None]) + sh1[:, None]
+        x = x + g1[:, None] * self.attn(h, pos_f, pos_t)
+        h = self.norm2(x) * (1 + s2[:, None]) + sh2[:, None]
+        return x + g2[:, None] * self.mlp(h)
+
+
 class ProbeModel(nn.Module):
     """Waveform-in / waveform-out STFT transformer with a swappable front-end.
 
@@ -92,19 +154,27 @@ class ProbeModel(nn.Module):
     """
 
     def __init__(self, frontend: str, n_bottleneck: int | None = None,
-                 patch_f: int | None = None, patch_t: int | None = None):
+                 patch_f: int | None = None, patch_t: int | None = None,
+                 pack_nyquist: bool = False, drop_nyquist: bool = False, rope2d: bool = False):
         super().__init__()
         self.frontend = frontend
         self.sample_rate = SR
         self.stft = STFTConfig.from_dict(STFT)
+        self.pack = False
+        self.drop = False
+        self.rope2d = bool(rope2d)
+        if self.rope2d and frontend != "square":
+            raise ValueError("rope2d is only defined for the 2D 'square' front-end")
         f = self.stft.freq_bins  # 1025
-        # --- shared trunk (seeded so init matches across front-ends) ---
+        # --- shared trunk (seeded so init matches across front-ends; Block2D mirrors
+        # TransformerBlock param-for-param so the 1D/2D-RoPE inits are identical) ---
         torch.manual_seed(0)
         self.time_embed = TimeEmbedding(COND_DIM, time_scale=100.0)
         self.cond_embed = ConditioningEmbedding(COND_DIM, COND_DIM)
         self.cond_combine = ConditioningCombiner(COND_DIM)
         self.blocks = nn.ModuleList(
-            [TransformerBlock(DIM, COND_DIM, heads=HEADS, mlp_ratio=8 / 3, rope=True, qk_norm=True)
+            [Block2D(DIM, COND_DIM, heads=HEADS, mlp_ratio=8 / 3) if self.rope2d
+             else TransformerBlock(DIM, COND_DIM, heads=HEADS, mlp_ratio=8 / 3, rope=True, qk_norm=True)
              for _ in range(DEPTH)]
         )
         # --- front-end specific tokeniser / projections ---
@@ -119,15 +189,22 @@ class ProbeModel(nn.Module):
             self.out_proj = nn.Conv1d(DIM, 2 * f, 1)  # output full-rank (input-only bottleneck)
         elif frontend == "square":
             self.fp, self.tp = patch_f or SQ_FP, patch_t or SQ_TP
-            self.fpad = (-f) % self.fp  # 1025 -> 1152 (9 patches)
-            self.npf = (f + self.fpad) // self.fp
+            self.pack = bool(pack_nyquist)  # packed rfft: fold Nyquist into DC imag -> 1024 clean bins
+            self.drop = bool(drop_nyquist)  # drop the Nyquist bin entirely (lossy) -> 1024 clean bins
+            self.fbins = (f - 1) if (self.pack or self.drop) else f
+            self.fpad = (-self.fbins) % self.fp
+            self.npf = (self.fbins + self.fpad) // self.fp
             feat = 2 * self.fp * self.tp
             if n_bottleneck:  # JiT linear input bottleneck on the patch projection (input-only)
                 self.in_proj = nn.Sequential(nn.Linear(feat, n_bottleneck, bias=False), nn.Linear(n_bottleneck, DIM))
             else:
                 self.in_proj = nn.Linear(feat, DIM)
             self.out_proj = nn.Linear(DIM, feat)
-            ntok = self.npf * (self._tpad_frames() // self.tp)
+            npt = self._tpad_frames() // self.tp
+            ntok = self.npf * npt
+            if self.rope2d:  # axial positions over the (freq-patch, time-patch) grid, freq-major raster
+                self.register_buffer("pos_f", torch.arange(self.npf).repeat_interleave(npt), persistent=False)
+                self.register_buffer("pos_t", torch.arange(npt).repeat(self.npf), persistent=False)
         elif frontend == "band":
             self.fsplit = f // 2 + f % 2  # 513 low bins, 512 high bins
             lo, hi = self.fsplit, f - self.fsplit
@@ -174,8 +251,27 @@ class ProbeModel(nn.Module):
         npt = self._tpad_frames() // self.tp
         y = self.out_proj(h).view(b, self.npf, npt, 2, self.fp, self.tp)
         y = y.permute(0, 3, 1, 4, 2, 5).reshape(b, 2, self.npf * self.fp, npt * self.tp)
-        y = y[:, :, :FREQ, :t]  # crop pad
-        return _no_amp_complex(y[:, 0:1], y[:, 1:2])  # [B,1,F,T] complex
+        y = y[:, :, : self.fbins, :t]  # crop pad (self.fbins = 1024 packed, 1025 otherwise)
+        return _no_amp_complex(y[:, 0:1], y[:, 1:2])  # [B,1,fbins,T] complex
+
+    def _pack(self, spec):
+        """[B,1,1025,T] complex -> [B,1,1024,T]; Nyquist real folded into bin-0 (DC) imag."""
+        with torch.amp.autocast(device_type=spec.device.type, enabled=False):
+            bin0 = torch.complex(spec[:, :, 0, :].real, spec[:, :, FREQ - 1, :].real).unsqueeze(2)
+            return torch.cat([bin0, spec[:, :, 1 : FREQ - 1, :]], dim=2)
+
+    def _unpack(self, packed):
+        """[B,1,1024,T] -> [B,1,1025,T]; DC and Nyquist restored as real-only bins."""
+        with torch.amp.autocast(device_type=packed.device.type, enabled=False):
+            z = torch.zeros_like(packed[:, :, 0, :].real)
+            dc = torch.complex(packed[:, :, 0, :].real, z).unsqueeze(2)
+            nyq = torch.complex(packed[:, :, 0, :].imag, z).unsqueeze(2)
+            return torch.cat([dc, packed[:, :, 1:, :], nyq], dim=2)
+
+    def _undrop(self, spec):
+        """[B,1,1024,T] -> [B,1,1025,T]; Nyquist restored as zero (the dropped bin)."""
+        nyq = torch.zeros_like(spec[:, :, :1, :])
+        return torch.cat([spec, nyq], dim=2)
 
     def _tok_band(self, spec):
         lo = complex_to_channels(spec[:, :, : self.fsplit])
@@ -201,19 +297,28 @@ class ProbeModel(nn.Module):
         if self.frontend in ("column", "bottleneck"):
             h = self._tok_column(spec)
         elif self.frontend == "square":
-            h = self._tok_square(spec)
+            spec_in = self._pack(spec) if self.pack else (spec[:, :, : self.fbins, :] if self.drop else spec)
+            h = self._tok_square(spec_in)
         else:
             h = self._tok_band(spec)
         h = h + self.pos
 
-        for block in self.blocks:
-            h = block(h, cond)
+        if self.rope2d:
+            for block in self.blocks:
+                h = block(h, cond, self.pos_f, self.pos_t)
+        else:
+            for block in self.blocks:
+                h = block(h, cond)
 
         if self.frontend in ("column", "bottleneck"):
             y = self._untok_column(h)
             spec_out = channels_to_complex(y, 1, self.stft.freq_bins)
         elif self.frontend == "square":
             spec_out = self._untok_square(h, frames)
+            if self.pack:
+                spec_out = self._unpack(spec_out)
+            elif self.drop:
+                spec_out = self._undrop(spec_out)
         else:
             spec_out = self._untok_band(h)
         wav = stft_to_waveform(spec_out, self.stft, length=target)

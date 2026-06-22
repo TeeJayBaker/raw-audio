@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 
+from backbone.io import channels_to_complex
 from ema import ema_swapped
 from eval.audio_metrics import (
     density_coverage,
@@ -12,6 +13,7 @@ from eval.audio_metrics import (
     kernel_audio_distance,
     monge_audio_distance,
 )
+from losses.spec import consistency_residual
 
 
 def embedding_metric_cfg(cfg) -> dict[str, Any]:
@@ -131,6 +133,8 @@ def validate_metrics(trainer) -> dict[str, float]:
     wants_dc = bool((embedding_cfg.get("density_coverage", {}) or {}).get("enabled", False))
     needs_backend = distance in {"fad", "kad", "mind", "both", "all"} or wants_dc
     wants_cosine = bool(embedding_cfg.get("cosine", False))
+    metrics_cfg = (cfg.get("eval", {}) or {}).get("metrics", {}) or {}
+    wants_consistency = bool((metrics_cfg.get("consistency_residual", {}) or {}).get("enabled", False))
     cache = trainer.real_embedding_cache if enabled and bool(embedding_cfg.get("cache_real", True)) else None
     max_batches = int(cfg.train.get("val_batches", 1))
 
@@ -154,11 +158,26 @@ def validate_metrics(trainer) -> dict[str, float]:
                 sums["val_total"] = sums.get("val_total", 0.0) + float(loss.detach().cpu())
                 for name, value in terms.items():
                     sums[f"val_{name}"] = sums.get(f"val_{name}", 0.0) + float(value.detach().cpu())
-                if enabled and (needs_backend or wants_cosine):
+                fake_spec = None
+                if (enabled and (needs_backend or wants_cosine)) or wants_consistency:
                     if fake is None:
-                        fake = trainer.sample(tuple(audio.shape), cond=cond)
+                        if wants_consistency:
+                            fake, fake_spec = trainer.sample(tuple(audio.shape), cond=cond, return_spec=True)
+                        else:
+                            fake = trainer.sample(tuple(audio.shape), cond=cond)
                     fake = fake.clamp(-1.0, 1.0)
-                    if needs_backend:
+                    if fake_spec is not None:
+                        # reference-free consistency residual on free-running samples (the model's raw
+                        # pre-iSTFT spec at the final step) -- the phasey-artifact diagnostic.
+                        spec = channels_to_complex(
+                            fake_spec / trainer.method.spec_scale,
+                            trainer.model.out_channels,
+                            trainer.model.stft.freq_bins,
+                        )
+                        sums["val_consistency_metric"] = sums.get("val_consistency_metric", 0.0) + float(
+                            consistency_residual(spec, trainer.model.stft, fake.shape[-1])
+                        )
+                    if enabled and needs_backend:
                         if trainer.metric_backend is None:
                             raise ValueError(
                                 "FAD/KAD/MIND validation requires a metric embedding backend"
@@ -172,7 +191,7 @@ def validate_metrics(trainer) -> dict[str, float]:
                         if real is not None and fake_emb is not None:
                             real_metric.append(real.detach())
                             fake_metric.append(fake_emb.detach())
-                    if wants_cosine and trainer.conditioner is not None and cond is not None:
+                    if enabled and wants_cosine and trainer.conditioner is not None and cond is not None:
                         fc = trainer.condition(fake, sample_rate, audio_lengths)
                         if fc is not None:
                             real_cond.append(cond.detach())
@@ -203,8 +222,10 @@ def generate_examples(trainer) -> list[torch.Tensor] | None:
     try:
         with ema_swapped(trainer.ema, trainer.model):
             generated = [
-                trainer.sample(noise.shape, cond=cond, noise=noise.to(trainer.device))[0].detach().cpu()
-                for noise, cond in zip(trainer.example_noise, trainer.example_cond, strict=True)
+                trainer.sample((1, *audio.shape), cond=cond, noise=noise.to(trainer.device))[0].detach().cpu()
+                for audio, noise, cond in zip(
+                    trainer.example_audio, trainer.example_noise, trainer.example_cond, strict=True
+                )
             ]
     finally:
         trainer.model.train(was_training)

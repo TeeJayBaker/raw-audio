@@ -4,7 +4,7 @@ defaults:
   - /train/default@train
   - /data/audio_directory@data
   - /flow/fm@flow
-  - /backbone/wavenext@backbone
+  - /backbone/stft_transformer@backbone
   - /eval/preliminary@eval
   - _self_
 
@@ -28,6 +28,8 @@ loss:
   primary: mse  # 'mse' or 'l1'
   mr_stft_weight: 0.0  # multi-resolution STFT auxiliary loss weight (0 disables)
   mr_stft_log_weight: 0.0  # log-magnitude term weight within MR-STFT
+  consistency_weight: 0.0  # RFWave-style STFT overlap/consistency residual on the raw spec (0 disables)
+  cdpam_weight: 0.0  # CDPAM perceptual aux on the predicted waveform (0 disables; loads a frozen ~106 MB net)
 
 optimizer:
   _target_: torch.optim.AdamW

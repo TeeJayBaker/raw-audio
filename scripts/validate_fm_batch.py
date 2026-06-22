@@ -64,7 +64,7 @@ def main() -> None:
         cond = conditioner(batch["audio"], sample_rate=int(batch["sample_rate"]), audio_lengths=batch["audio_lengths"])
     flow = RectifiedFlow()
     x_t, t, x1 = flow.train_tuple(batch["audio"], t=torch.rand(batch["audio"].shape[0]))
-    pred = model(x_t, t=t, cond=cond, length=batch["audio"].shape[-1])
+    pred = flow._predict(model, x_t, t=t, cond=cond, length=batch["audio"].shape[-1], with_aux=False)[0]
     loss_cfg = OmegaConf.to_container(cfg.loss, resolve=True)
     total, _ = flow.loss(
         pred,

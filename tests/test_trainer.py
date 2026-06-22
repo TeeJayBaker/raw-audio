@@ -18,7 +18,7 @@ CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 def _compose(overrides: list[str]):
     GlobalHydra.instance().clear()
     with hydra.initialize_config_dir(version_base=None, config_dir=str(CONFIG_DIR)):
-        cfg = hydra.compose(config_name="experiment/fm_wavenext_smoke", overrides=overrides)
+        cfg = hydra.compose(config_name="experiment/fm_smoke", overrides=overrides)
     return cfg
 
 
@@ -140,6 +140,31 @@ def test_rftrainer_applies_wavefm_and_complex_aux_losses(tmp_path: Path):
     loss.backward()
 
     assert {"wavefm", "complex_stft"} <= set(terms)
+    assert math.isfinite(float(loss)) and float(loss) > 0
+
+
+def test_rftrainer_applies_cdpam_perceptual_loss(tmp_path: Path):
+    import pytest
+
+    pytest.importorskip("cdpam")
+    data_root = tmp_path / "data"
+    _write_dataset(data_root, sample_rate=8000, seconds=0.3)
+    overrides = _stft_trainer_overrides(data_root, tmp_path / "run")
+    overrides += ["loss.wavefm_weight=0.0", "loss.complex_stft_weight=0.0", "+loss.cdpam_weight=1.0"]
+    GlobalHydra.instance().clear()
+    with hydra.initialize_config_dir(version_base=None, config_dir=str(CONFIG_DIR)):
+        cfg = hydra.compose(config_name="experiment/fm_oneshots_mars_stft", overrides=overrides)
+    cfg.conditioner = OmegaConf.create({"type": "null", "embedding_dim": 16})
+
+    trainer = RFTrainer(cfg)
+    assert trainer.perceptual is not None
+    batch = next(iter(trainer.train_loader))
+    audio = batch["audio"].to(trainer.device)
+    cond = trainer.condition(audio, trainer.sample_rate, batch["audio_lengths"].to(trainer.device))
+    loss, terms = trainer.training_step(audio, cond)
+    loss.backward()
+
+    assert "cdpam" in terms
     assert math.isfinite(float(loss)) and float(loss) > 0
 
 

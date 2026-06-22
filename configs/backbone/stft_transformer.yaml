@@ -9,13 +9,15 @@ stft:
   hop_length: 512
   win_length: 2048
 patching:
-  patch_size: 1
-head:
-  type: identity
+  scheme: column  # column (one token per STFT frame) | square (2-D freq x time tiles)
+  patch_f: null   # square only: freq bins per tile (must divide freq_bins-1, Nyquist dropped)
+  patch_t: null   # square only: STFT frames per tile
+bottleneck: null  # JiT/pMF low-rank waist on in_proj (null = full-rank)
 block:
   dim: 512
   depth: 12
   heads: 8
+  aux_depth: 0  # MeanFlow v-head depth (0 = single-head RF model); MF runs set e.g. 6
 conditioning:
   cond_dim: 384  # conditioning width (independent of block width)
   embed_dim: 384  # conditioner output dim, projected to cond_dim

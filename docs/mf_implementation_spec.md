@@ -28,10 +28,16 @@ interval genuinely shapes 1-NFE output; conditioning on it (both bounds) makes i
 inference, fixed mode bakes one choice. Default is fixed; flip `condition_interval` to make it
 tunable.
 
+> **Superseded (2026-06-19):** the original recipe below trained MeanFlow with a *single* head and
+> took the `du/dt` tangent from the u-head's h=0 boundary eval. That collapsed (noise on silence;
+> `‖h·du/dt‖` blow-up — see `docs/fm_training_notes.md` 2026-06-17). The auxiliary v-head listed as
+> out-of-scope here is now **built** as the fix; see §6 for the twin-head recipe that overrides the
+> Task 4 `_mf_step` tangent and the "no v-head" scope line.
+
 **Out of scope (do not build):** the Triton flash-attention-JVP kernel itself (only the seam
 for it), ConvNeXt-backbone support, in-context conditioning (the AdaLN→token swap iMF made to fit
 6 conditions — our fallback only *if* conditioned-interval AdaLN overloads, see Task 1 note), an
-auxiliary v-head, perceptual embedder losses, annealed `rf_fraction` schedules. The `jvp` mode is
+auxiliary v-head (← now built, see §6), perceptual embedder losses, annealed `rf_fraction` schedules. The `jvp` mode is
 best-effort: `torch.func.jvp` through `torch.stft`/`istft` may lack forward-AD support — if it
 errors, leave the mode in place (it is the seam for the kernel port) and note it; `dde` is the
 supported default.
@@ -1092,3 +1098,45 @@ the run dir. If the jvp run fails inside `torch.func.jvp` with a forward-AD NotI
   matched steps), evaluate in-context conditioning (the iMF AdaLN→token swap).
 - Sweep the pMF-style MR-STFT threshold around the mirrored default `t >= 0.2` (pMF uses
   `t <= 0.8` on its data-to-noise axis; its longer-training `0.6` setting maps to repo `t >= 0.4`).
+
+---
+
+## 6. Revision (2026-06-19) — pMF twin x-pred heads (fixes the single-head collapse)
+
+The single-head recipe (Tasks 1–5) collapsed in training: 1-NFE output went to noise even on
+silence, every eval metric 6–18× worse than the RF base. Root cause (`docs/fm_training_notes.md`,
+2026-06-17): the `du/dt` tangent came from the **u-head re-evaluated at the h=0 boundary** — an
+unsupervised, high-variance eval — driving the MeanFlow `‖J‖²`/`‖h·du/dt‖` blow-up. pMF
+(`/tmp/pMF`) fixes this with a directly-supervised instantaneous-velocity head that supplies the
+tangent. This revision implements that and supersedes the Task 4 `_mf_step` tangent and the "no
+v-head" scope line. **Both heads stay x-prediction** (converted to velocity internally — mandatory
+for raw data); the v-head is training-only.
+
+**Backbone (`src/backbone/transformer.py`).** New `block.aux_depth` (default 0). `blocks` stays the
+full `depth` ModuleList — `[:depth−aux_depth]` is a shared trunk, the tail is the u-head — so
+`out_proj`/`blocks` keep their names and RF checkpoints + existing tests load unchanged. A parallel
+`v_blocks` (`aux_depth` blocks) + `v_out_proj` branch off the shared-trunk activation.
+`forward(return_aux=True)` returns `(u_spec, v_spec)`; otherwise (and whenever `aux_depth=0`) it
+returns the single u-head tensor, so inference/eval never run the v-head. `aux_depth=0` is the RF
+model bit-for-bit; MF runs use `aux_depth=6` of `depth=12`.
+
+**Flow (`src/flow/fm.py`).** `target_to_v` floors `|1−t|` at module constant `VELOCITY_CLIP=0.05`
+(sign-preserving), matching pMF's `clip(t,0.05,1)` (was `EPS=1e-5`). `_predict` gains `return_aux`,
+ISTFT-ing the v-branch alongside the u-branch (composes with `return_spec`). `guided_velocity_target`
+drops `return_boundary` (the trainer no longer takes a tangent from it). `mf.py` is unchanged.
+
+**Trainer (`src/trainer.py::MFTrainer`).** `_mf_step` now: compute `v_tgt` (guided or plain) under
+no-grad; forward the v-head (`_predict(return_aux=True)`) for `v_c = target_to_v(x̂_v)`; pass
+`v_c.detach()` as the `u_and_dudt` tangent (replacing the h=0 boundary eval); loss
+`= loss_u + loss_v`, `loss_v = mf_loss(v_c, v_tgt)`, logged as `train/v_mse`. `_sample_t_h` applies
+a **per-row r=t** mask — `rf_fraction` of rows get `h=0` (pure FM for both heads) — replacing the
+whole-microbatch RF/MF split; `training_step` is just `_mf_step`. `rf_warmup_steps` removed.
+`MFTrainer` asserts `aux_depth>0`; the warm-start allow-list gains `v_blocks`/`v_out_proj`.
+
+**Configs.** `backbone/stft_transformer.yaml` adds `block.aux_depth: 0`; the MF experiment configs
+set `aux_depth: 6`. `flow/mf.yaml` sampler → `logit_mean: -0.8, logit_std: 0.8` (pMF `(0.8,0.8)`
+mirrored to the repo axis) and drops `rf_warmup_steps`.
+
+**Tests.** `tests/test_backbone.py`: `aux_depth=0` RF-equivalence, twin-head shapes under
+`return_aux`, RF→v-head warm-start. `tests/test_mean_flow.py`: velocity-clip behaviour
+(replaces the old past-endpoint sign test); the `return_boundary` test is removed.

@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from backbone.factory import build_backbone, load_backbone_config  # noqa: E402
+from flow.fm import RectifiedFlow  # noqa: E402
 from scripts.model_stats import count_params, format_param_count  # noqa: E402
 
 
@@ -29,7 +30,7 @@ def _dummy_cond(cfg, batch_size: int):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark a Hydra-configured backbone.")
-    parser.add_argument("config", nargs="?", default="configs/backbone/flow2gan.yaml")
+    parser.add_argument("config", nargs="?", default="configs/backbone/stft_transformer.yaml")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--length", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=2)
@@ -38,17 +39,20 @@ def main() -> None:
 
     cfg = load_backbone_config(args.config)
     model = build_backbone(cfg).eval()
+    flow = RectifiedFlow()
     x = _dummy_input(cfg, args.batch_size, args.length)
     cond = _dummy_cond(cfg, args.batch_size)
     length = args.length
 
+    # The backbone is spectrogram-only; benchmark the full waveform->waveform path
+    # (STFT + backbone + iSTFT) that RectifiedFlow._predict runs at sample time.
     with torch.inference_mode():
         for _ in range(args.warmup):
-            model(x, cond=cond, length=length)
+            flow._predict(model, x, cond=cond, length=length, with_aux=False)
         timings = []
         for _ in range(args.iters):
             start = time.perf_counter()
-            y = model(x, cond=cond, length=length)
+            y = flow._predict(model, x, cond=cond, length=length, with_aux=False)[0]
             timings.append(time.perf_counter() - start)
 
     mean_s = statistics.mean(timings)

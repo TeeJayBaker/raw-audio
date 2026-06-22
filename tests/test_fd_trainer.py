@@ -55,7 +55,7 @@ def test_fdtrainer_smoke_finetunes_from_checkpoint(tmp_path: Path, monkeypatch):
     base_run = tmp_path / "base"
     base = RFTrainer(
         _compose(
-            "experiment/fm_wavenext_smoke",
+            "experiment/fm_smoke",
             [f"data.root={data_root}", f"train.run_dir={base_run}", "train.wandb.enabled=false"],
         )
     )

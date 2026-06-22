@@ -18,7 +18,11 @@ _METHODS: dict[str, type] = {
 def build_method(cfg: Any) -> RectifiedFlow:
     """Build the generative method from cfg. Dispatches on ``cfg.flow.method`` (default rectified_flow)."""
     flow_cfg = cfg.get("flow", {}) if hasattr(cfg, "get") else getattr(cfg, "flow", {})
-    kind = str((flow_cfg or {}).get("method", "rectified_flow")).lower()
+    flow_cfg = flow_cfg or {}
+    kind = str(flow_cfg.get("method", "rectified_flow")).lower()
     if kind not in _METHODS:
         raise ValueError(f"Unknown flow.method: {kind}")
-    return _METHODS[kind]()
+    space = str(flow_cfg.get("space", "waveform")).lower()
+    if space not in {"waveform", "spec"}:
+        raise ValueError(f"flow.space must be 'waveform' or 'spec', got {space!r}")
+    return _METHODS[kind](spec_space=space == "spec", spec_scale=float(flow_cfg.get("spec_scale", 1.0)))
